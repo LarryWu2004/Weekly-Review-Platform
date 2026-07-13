@@ -1,0 +1,120 @@
+{
+  "info": {
+    "name": "NexusOS External App API Mock",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:18080/api/v1" },
+    { "key": "app_key", "value": "platform-api-tester" },
+    { "key": "tenant_id", "value": "8133c675-3bb4-4ace-ba10-1e83299cf761" },
+    { "key": "user_id", "value": "a3f0d748-5104-4703-a230-f5d3931a56b2" },
+    { "key": "source_id", "value": "c647bb88-4e05-4306-9646-2234c918bcd1" },
+    { "key": "agent_id", "value": "2cc6e194-65ab-4096-a51a-99ccd05d662f" },
+    { "key": "api_key", "value": "mock-api-key" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{api_key}}", "type": "string" }]
+  },
+  "event": [],
+  "item": [
+    {
+      "name": "API Manifest",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/apis"
+      }
+    },
+    {
+      "name": "Context",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/context"
+      }
+    },
+    {
+      "name": "Organization Graph",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/organization-graph?user_id={{user_id}}"
+      }
+    },
+    {
+      "name": "List Agents",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/agents?user_id={{user_id}}"
+      }
+    },
+    {
+      "name": "Run Agent",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"objective\": \"请总结今天需要跟进的事项\",\n  \"input\": {\n    \"customer_id\": \"C001\"\n  }\n}"
+        },
+        "url": "{{base_url}}/external-app/agents/{{agent_id}}/runs"
+      }
+    },
+    {
+      "name": "List Data Sources",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/data-sources"
+      }
+    },
+    {
+      "name": "Get Data Source",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" }
+        ],
+        "url": "{{base_url}}/external-app/data-sources/{{source_id}}"
+      }
+    },
+    {
+      "name": "Structured Query",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" },
+          { "key": "x-business-app-key", "value": "{{app_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_id\": \"{{source_id}}\",\n  \"sql\": \"select * from customers limit 20\",\n  \"execution_mode\": \"auto\",\n  \"max_rows\": 50\n}"
+        },
+        "url": "{{base_url}}/external-app/structured-query/run"
+      }
+    }
+  ]
+}

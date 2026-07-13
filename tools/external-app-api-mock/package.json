@@ -1,0 +1,11 @@
+{
+  "name": "@nexusos/external-app-api-mock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local mock server for NexusOS External App APIs.",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  }
+}
