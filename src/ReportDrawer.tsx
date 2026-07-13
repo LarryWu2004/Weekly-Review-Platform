@@ -17,13 +17,24 @@ export function ReportDrawer({ reportId, userId, onClose, onChanged, onDeleted, 
   const [commenting, setCommenting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   useEffect(() => {
     setReport(null);
+    setConfirmingDelete(false);
     api<ReportDetail>(`/api/reports/${reportId}`, userId)
       .then(setReport)
       .catch((error) => notify(error instanceof Error ? error.message : "加载失败"));
   }, [reportId, userId, notify]);
+
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleting) setConfirmingDelete(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [confirmingDelete, deleting]);
 
   async function submitComment(event: FormEvent) {
     event.preventDefault();
@@ -66,7 +77,7 @@ export function ReportDrawer({ reportId, userId, onClose, onChanged, onDeleted, 
   }
 
   async function removeReport() {
-    if (!report || !window.confirm(`确认删除“${report.title}”吗？周报、评论、分析和附件都将一并删除。`)) return;
+    if (!report) return;
     setDeleting(true);
     try {
       await api<void>(`/api/reports/${report.id}`, userId, { method: "DELETE" });
@@ -90,7 +101,7 @@ export function ReportDrawer({ reportId, userId, onClose, onChanged, onDeleted, 
         <div className="drawer-top">
           <div><button className="icon-button" onClick={onClose} aria-label="返回"><ArrowLeft size={19} /></button><span>周报详情</span></div>
           <div className="drawer-actions">
-            {isAuthor ? <button className="text-button danger-button" disabled={deleting} onClick={() => void removeReport()}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}删除</button> : null}
+            {isAuthor ? <button className="text-button danger-button" disabled={deleting} onClick={() => setConfirmingDelete(true)}><Trash2 size={16} />删除</button> : null}
             <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
           </div>
         </div>
@@ -137,6 +148,22 @@ export function ReportDrawer({ reportId, userId, onClose, onChanged, onDeleted, 
           </div>
         )}
       </div>
+      {report && confirmingDelete ? (
+        <div className="delete-confirm-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setConfirmingDelete(false)}>
+          <div className="delete-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-confirm-title" aria-describedby="delete-confirm-description">
+            <div className="delete-confirm-icon"><Trash2 size={20} /></div>
+            <div className="delete-confirm-copy">
+              <span>删除周报</span>
+              <h3 id="delete-confirm-title">确定删除这份周报？</h3>
+              <p id="delete-confirm-description">“{report.title}”以及关联评论、Agent 分析和附件将一并删除，且无法恢复。</p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button className="secondary-button" autoFocus disabled={deleting} onClick={() => setConfirmingDelete(false)}>取消</button>
+              <button className="confirm-delete-button" disabled={deleting} onClick={() => void removeReport()}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}{deleting ? "正在删除" : "确认删除"}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
