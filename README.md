@@ -1,307 +1,467 @@
 # 周报协作
 
-当前版本：`v1.2`
+当前版本：`v1.4`
 
-## 项目简介
+周报协作是一个独立部署、由 Agent 协作平台启动的周报业务应用。用户可以提交“本周工作 / 下周计划”和附件；具备审阅权限的成员可以查看、评论并发起 Agent 分析。周报、权限快照、附件、评论、消息和分析结果全部保存在本应用中，平台只提供用户身份、组织关系和个人 Agent 能力。
 
-周报协作是一个与 Agent 协作平台解耦的业务应用。员工可以提交周报和附件，上级根据组织关系查看并评论下属周报；应用同时提供评论消息提醒、历史周报搜索，以及结合历史内容、附件和上级反馈的 Agent 智能分析。周报、权限、附件和评论等业务数据均由本应用独立保存。
+> 本应用没有独立登录页。部署者可以选择安全的一次性票据模式，或直接在 URL 中拼接用户 ID 的简化模式；正式生产默认并推荐使用票据模式。
 
-## 功能概览
+## 一、生产部署
 
-- 员工分别填写“本周工作”和“下周计划”后提交周报，并可上传最多 5 个附件，单个附件不超过 10 MB。
-- 提交时读取平台组织关系，自动覆盖直接上级、间接上级和多个上级。
-- 作者查看自己的历史周报；上级只查看权限表内允许审阅的周报。
-- 上级发表评论后，作者会收到消息提醒，支持单条已读和全部已读。
-- 作者和有查看权限的上级都可以发起 Agent 分析。
-- 用户可从平台返回的个人 Agent 列表中选择并保存周报分析 Agent。
-- Agent 会结合本次周报、附件文本、作者最近 8 份历史周报和历史评论给出建议。
-- “我的周报”和“审阅周报”均支持按关键词、提交人和周报日期范围搜索；审阅页按“待审阅 / 已审阅”分区展示。
-- 支持中文附件名、附件文本提取、附件下载、周报删除和关联数据清理。
-- 提供响应式前端、SQLite 持久化任务、操作审计、限流、安全响应头、备份与恢复脚本。
-- 不提供独立登录页；平台通过一次性启动票据或可信反向代理传递已认证用户身份。
+### 1. 部署前准备
 
-### v1.2 主要变化
+需要准备：
 
-- 新增“我的消息”、未读红点、评论定位和全部已读。
-- 移除浏览器用户 ID 模拟入口，改为平台服务端启动票据和 HttpOnly 应用会话。
-- 新增三级演示用户 `1 → 2 → 3` 及对应周报数据。
-- 上级可使用自己的个人 Agent 分析有权查看的周报。
-- 新增 Agent 配置页，可读取平台当前用户的可调用 Agent 并保存个人选择。
-- 新增全部周报档案及关键词、人员、日期组合筛选。
-- 完善归档页、侧边栏、详情页和交互反馈。
+- Node.js 22 或 Docker。
+- 一个可由用户和平台服务端访问的 HTTPS 域名，例如 `https://weekly.example.com`。
+- 平台分配的 External App API 地址、API Key、租户 ID 和业务应用 Key。
+- 使用票据模式时，准备平台与本应用共享的启动密钥，至少 32 位随机字符。
+- 可持久化的 SQLite 数据目录和附件目录。
+- 生产可用的 ClamAV `clamd` 服务。
+- 单实例部署；当前版本不支持多个实例同时写同一个 SQLite 文件。
 
-## 系统边界
+### 2. 生产环境变量
+
+复制 [.env.example](./.env.example) 并创建不提交到 Git 的 `.env.production`：
+
+```env
+NODE_ENV=production
+PORT=3001
+DATA_DIR=/app/data
+UPLOAD_DIR=/app/uploads
+
+NEXUSOS_API_BASE_URL=https://platform.example.com/api/v1
+NEXUSOS_API_KEY=<平台分配的服务端 API Key>
+NEXUSOS_TENANT_ID=<租户 ID>
+NEXUSOS_APP_KEY=<外部应用 Key>
+
+APP_PUBLIC_URL=https://weekly.example.com
+PLATFORM_ENTRY_MODE=ticket
+PLATFORM_LAUNCH_SECRET=<至少 32 位随机值>
+LAUNCH_TICKET_TTL_SECONDS=120
+SESSION_TTL_HOURS=8
+SESSION_COOKIE_NAME=weekly_session
+
+CORS_ALLOWED_ORIGINS=https://platform.example.com
+FRAME_ANCESTORS='self' https://platform.example.com
+
+CLAMAV_HOST=clamav.internal
+CLAMAV_PORT=3310
+CLAMAV_TIMEOUT_MS=15000
+
+PLATFORM_TIMEOUT_MS=20000
+RATE_LIMIT_PER_MINUTE=180
+AGENT_RATE_LIMIT_PER_MINUTE=6
+```
+
+注意：
+
+- `PLATFORM_ENTRY_MODE` 可选 `ticket` 或 `url_user_id`，默认 `ticket`。
+- `NEXUSOS_API_KEY` 和 `PLATFORM_LAUNCH_SECRET` 是两种不同的密钥；后者只在 `ticket` 模式必填。
+- 所有密钥只能放在服务端环境变量或密钥管理服务中，不得进入前端、URL、日志或 Git。
+- `APP_PUBLIC_URL` 在生产环境必须是 HTTPS。
+- `ENABLE_LOCAL_TEST_ENTRY` 不要配置在生产环境；即使误配，生产模式也不会启用测试入口。
+- 如果平台只做顶层页面跳转，不需要跨域调用业务 API，`CORS_ALLOWED_ORIGINS` 仍需按服务端生产校验填写可信来源。
+
+### 3. 使用 Docker 部署（推荐）
+
+```bash
+docker build -t weekly-review-platform:v1.4 .
+
+docker run -d \
+  --name weekly-review-platform \
+  --restart unless-stopped \
+  -p 3001:3001 \
+  --env-file .env.production \
+  -v weekly-data:/app/data \
+  -v weekly-uploads:/app/uploads \
+  weekly-review-platform:v1.4
+```
+
+必须持久化：
+
+- `/app/data`：SQLite 数据库。
+- `/app/uploads`：周报附件。
+
+容器健康检查使用：
+
+```text
+GET /api/ready
+```
+
+生产环境建议在容器前配置 Nginx、Traefik 或平台网关，由网关负责 HTTPS、访问日志和请求大小限制。
+
+### 4. 使用 Node.js 部署
+
+```bash
+npm ci
+npm run build
+node --env-file=.env.production dist-server/index.js
+```
+
+如果由 systemd、Docker Compose、Kubernetes 或进程管理器注入环境变量，也可以执行：
+
+```bash
+npm start
+```
+
+构建完成后，Express 在同一端口提供前端静态文件和业务 API。
+
+### 5. 部署后检查
+
+```bash
+curl https://weekly.example.com/api/health
+curl https://weekly.example.com/api/ready
+```
+
+预期响应：
+
+```json
+{"status":"ok","service":"nexus-weekly"}
+```
+
+```json
+{"status":"ready","database":"ok","uploads":"ok"}
+```
+
+随后必须按所选入口模式从平台发起一次真实用户启动，验证：
+
+1. 平台能够申请一次性启动地址。
+2. 浏览器跳转后能够建立会话并进入首页。
+3. 提交周报时能够读取组织关系。
+4. Agent 配置页能够读取当前用户的 Agent。
+5. Agent 分析能够成功返回结果。
+
+## 二、平台如何启动本应用
+
+### 入口模式怎么选
+
+| 模式 | 配置 | 平台调用方式 | 适用场景 |
+| --- | --- | --- | --- |
+| 一次性票据（默认、推荐） | `PLATFORM_ENTRY_MODE=ticket` | 平台后端调用 `/auth/platform/launch`，再跳转返回的地址 | 公网或正式生产 |
+| URL 用户 ID（简单） | `PLATFORM_ENTRY_MODE=url_user_id` | 直接打开 `https://weekly.example.com/?user_id=<用户ID>` | 内网演示，或平台网关已阻止外部直访 |
+
+两种模式都会调用平台 `/external-app/context`，核对租户、用户 ID 和应用 Key。区别在于：票据模式能证明启动请求来自持有共享密钥的平台；URL 模式不能证明访问者本人就是 URL 中的用户，因此安全边界必须由平台网关承担。
+
+### 模式 A：一次性启动票据
 
 ```mermaid
-flowchart LR
-  P[Agent 协作平台] -->|一次性启动票据或可信代理身份| W[周报协作应用]
-  W -->|读取当前用户与能力| P
-  W -->|读取直接、间接及多个上级| P
-  W -->|调用用户个人 Agent| P
-  W --> D[(SQLite)]
-  W --> F[(附件目录)]
+sequenceDiagram
+  participant U as 已登录用户
+  participant P as Agent 协作平台
+  participant W as 周报协作应用
+  participant A as External App API
 
-  D --- R[周报与权限快照]
-  D --- C[评论、消息已读状态]
-  D --- A[Agent 任务与分析结果]
-  D --- L[审计日志]
+  U->>P: 点击“周报协作”
+  P->>W: POST /auth/platform/launch
+  W->>A: GET /external-app/context
+  A-->>W: 返回租户、用户和应用上下文
+  W-->>P: 返回一次性 launch_url
+  P-->>U: 302 跳转到 launch_url
+  U->>W: GET /auth/platform/consume?ticket=...
+  W-->>U: 写入 HttpOnly 会话 Cookie 并进入首页
 ```
+
+### 1. 平台服务端申请启动地址
+
+平台后端调用：
+
+```http
+POST https://weekly.example.com/auth/platform/launch
+Authorization: Bearer <PLATFORM_LAUNCH_SECRET>
+Content-Type: application/json
+
+{
+  "tenant_id": "8133c675-3bb4-4ace-ba10-1e83299cf761",
+  "user_id": "a3f0d748-5104-4703-a230-f5d3931a56b2",
+  "redirect_path": "/"
+}
+```
+
+要求：
+
+- 只能由平台服务端调用，不能把启动密钥交给浏览器。
+- `tenant_id` 必须与应用的 `NEXUSOS_TENANT_ID` 一致。
+- `user_id` 必须来自平台已经验证的登录态。
+- `redirect_path` 可省略，只接受应用内以 `/` 开头的相对路径。
+
+成功时返回 HTTP `201`：
+
+```json
+{
+  "launch_url": "https://weekly.example.com/auth/platform/consume?ticket=...",
+  "expires_at": "2026-07-14T10:02:00.000Z"
+}
+```
+
+平台服务端示例：
+
+```js
+async function createWeeklyLaunchUrl({ tenantId, userId }) {
+  const response = await fetch(`${process.env.WEEKLY_APP_URL}/auth/platform/launch`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.WEEKLY_PLATFORM_LAUNCH_SECRET}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      user_id: userId,
+      redirect_path: "/",
+    }),
+  });
+
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body.error?.message || `Weekly app HTTP ${response.status}`);
+  }
+  return body.launch_url;
+}
+```
+
+平台侧保存：
+
+```env
+WEEKLY_APP_URL=https://weekly.example.com
+WEEKLY_PLATFORM_LAUNCH_SECRET=<与应用 PLATFORM_LAUNCH_SECRET 完全一致>
+```
+
+### 2. 平台跳转用户浏览器
+
+平台拿到 `launch_url` 后，通过服务端 HTTP 302 或前端：
+
+```js
+location.assign(launchUrl);
+```
+
+将当前浏览器跳转到该地址。不要把 `launch_url` 长期写入日志或分析事件，因为它在有效期内代表一次登录机会。
+
+启动票据：
+
+- 默认 120 秒过期。
+- 只能消费一次，重复访问返回 401。
+- SQLite 只保存票据的 SHA-256 摘要。
+- 消费后写入 HttpOnly、SameSite=Lax 会话 Cookie。
+- 生产环境 Cookie 自动启用 Secure。
+- 会话默认 8 小时有效。
+
+当前推荐使用顶层页面跳转，或将应用部署在平台同站点的可信反向代理之后。若要跨站点 iframe 嵌入，仅配置 `FRAME_ANCESTORS` 还不够，还需要结合实际域名重新评估浏览器第三方 Cookie 策略。
+
+### 模式 B：URL 直接拼接用户 ID
+
+应用侧配置：
+
+```env
+PLATFORM_ENTRY_MODE=url_user_id
+APP_PUBLIC_URL=https://weekly.example.com
+```
+
+平台无需调用启动接口，直接跳转：
+
+```text
+https://weekly.example.com/?user_id=a3f0d748-5104-4703-a230-f5d3931a56b2
+```
+
+也可以由平台前端生成：
+
+```js
+const target = new URL("https://weekly.example.com/");
+target.searchParams.set("user_id", currentUser.id);
+location.assign(target.toString());
+```
+
+应用处理流程：
+
+1. 校验 `user_id` 格式。
+2. 调用平台 `/external-app/context`，核对 `tenant_id`、`user_id` 和 `app_key`。
+3. 创建本地 HttpOnly 会话 Cookie。
+4. 返回 HTTP 303 跳转到 `/`，立即从地址栏移除 `user_id`。
+
+安全限制：
+
+- URL 中的 `user_id` 可以被访问者自行修改。
+- `/external-app/context` 复核平台上下文，但不能证明浏览器访问者本人就是该用户。
+- 只有当平台网关要求用户先登录、并且应用源站不能被外部绕过网关直接访问时，才可以在正式环境使用。
+- 如果应用直接暴露在公网，必须使用 `ticket` 模式。
+
+### 4. 应用如何调用平台 API
+
+本应用服务端只调用以下 External App API：
+
+| 时机 | 方法 | 平台路径 | 用途 |
+| --- | --- | --- | --- |
+| 创建平台启动票据、加载会话 | `GET` | `/external-app/context` | 复核租户、用户和应用上下文 |
+| 提交周报 | `GET` | `/external-app/organization-graph?user_id=...` | 获取直接、间接及多条审阅关系 |
+| 打开 Agent 配置或开始分析 | `GET` | `/external-app/agents?user_id=...` | 获取当前用户可调用的个人 Agent |
+| 执行周报分析 | `POST` | `/external-app/agents/{agent_id}/runs` | 提交整理后的周报分析材料 |
+
+每次请求由本应用服务端发出，并携带：
+
+```http
+Authorization: Bearer <NEXUSOS_API_KEY>
+x-tenant-id: <NEXUSOS_TENANT_ID>
+x-user-id: <当前平台用户 ID>
+x-business-app-key: <NEXUSOS_APP_KEY>
+x-request-id: <每次请求生成的 UUID>
+Content-Type: application/json
+```
+
+Agent Run 的核心输入结构：
+
+```json
+{
+  "user_id": "当前发起人 ID",
+  "objective": "请评价本次周报内容，结合历史周报和已有评论指出不足，并给出具体、可执行的改进建议",
+  "input": {
+    "current_report": {
+      "title": "第 30 周周报",
+      "current_work": "本周工作内容",
+      "next_plan": "下周计划内容",
+      "attachments": [
+        {
+          "file_name": "项目进展.xlsx",
+          "text_preview": "应用提取的附件文本"
+        }
+      ]
+    },
+    "history_reports": [],
+    "comments": []
+  },
+  "mode": "task",
+  "runtime_hint": { "provider": "eap_native" },
+  "inject_context": false,
+  "inject_memories": false,
+  "capture_memory": false
+}
+```
+
+完整 External App API 契约见 [external-app-api-reference..md](./external-app-api-reference..md)，应用启动协议的独立说明见 [docs/platform-launch-integration.md](./docs/platform-launch-integration.md)。
+
+### 可选流程：可信反向代理
+
+如果平台网关反向代理本应用，可以配置：
+
+```env
+TRUSTED_IDENTITY_HEADER=x-authenticated-user-id
+TRUSTED_PROXY_SECRET_HEADER=x-trusted-proxy-secret
+TRUSTED_PROXY_SECRET=<至少 32 位随机值>
+```
+
+网关必须先删除浏览器传入的同名请求头，验证平台登录态，再注入真实用户 ID 和代理密钥。不要让浏览器直接持有代理密钥。
+
+## 三、功能概览
+
+- 分别填写“本周工作”和“下周计划”。
+- 每份周报最多上传 5 个附件，单个附件不超过 10 MB。
+- 提交时读取平台组织关系并创建不可越权的权限快照。
+- “我的周报”和“审阅周报”支持关键词、人员和日期筛选。
+- 审阅页分为“待审阅 / 已审阅”。
+- 评论后自动产生消息提醒，支持单条已读和全部已读。
+- 作者和具备查看权限的成员都可以发起 Agent 分析。
+- 用户可以从平台返回的个人 Agent 列表中选择分析 Agent。
+- Agent 会结合本次周报、附件文本、最近 8 份历史周报和已有评论给出建议。
+- 支持中文附件名、附件文本提取、安全下载和级联删除。
+- 提供持久化 Agent 任务、操作审计、限流、备份和恢复。
+
+## 四、系统边界
 
 平台负责：
 
-- 用户身份与租户上下文。
+- 用户登录、用户 ID 和租户上下文。
 - 组织关系图。
 - 当前用户可使用的个人 Agent。
 - Agent 运行能力。
 
 本应用负责：
 
-- 周报、附件、评论和消息的完整业务流程。
-- 根据提交时组织关系生成周报可见权限。
-- 附件文本提取与 Agent 输入组装。
-- Agent 任务状态、分析结果、审计、备份和恢复。
+- 周报、附件、权限快照、评论和消息。
+- 附件校验、病毒扫描和文本提取。
+- Agent 分析材料整理、任务状态和分析结果。
+- SQLite 数据迁移、审计、备份和恢复。
 
-本应用不会把周报、附件或评论写回平台，也不会自行维护平台组织关系。
+本应用不会把周报、附件或评论写回平台，也不会自行修改平台组织关系。
 
-## 核心业务流程
-
-### 提交与授权
-
-1. 用户在平台完成登录，平台服务端申请一次性启动地址并将浏览器跳转到应用。
-2. 用户提交周报和附件。
-3. 服务端校验周报内容、附件类型、文件签名和文件大小。
-4. 服务端调用组织关系 API，获取当前用户全部直接和间接上级。
-5. 应用保存周报，并将作者及所有上级写入 `report_access` 权限快照。
-6. 上级进入应用时，服务端按权限表返回可审阅周报。
-
-### 评论与消息
-
-1. 有查看权限的上级在周报详情中发表评论。
-2. 评论保存在本地 `comments` 表。
-3. 作者的“我的消息”出现通知和未读红点。
-4. 打开通知会跳转到对应周报的评论区并记录已读状态。
-
-### Agent 分析
-
-1. 作者或有查看权限的上级发起分析。
-2. 应用分别查询本次和历史周报的“本周工作 / 下周计划”，并补充附件文本与历史评论。
-3. 应用查询发起人的个人 Agent，并创建持久化分析任务。
-4. 后台任务调用平台 Agent API；失败任务按配置重试，服务重启后可继续处理。
-5. 前端轮询任务状态并展示分析结果。
-
-## 技术栈
-
-| 层级 | 技术 |
-| --- | --- |
-| 前端 | React 19、TypeScript、Vite、Lucide Icons |
-| 服务端 | Node.js 22、Express 5、TypeScript |
-| 数据库 | SQLite、better-sqlite3、WAL 模式 |
-| 文件解析 | XLSX、Mammoth、PDF Parse |
-| 测试 | Vitest、独立 mock 端到端测试 |
-| 部署 | 单进程 Node.js 或 Docker |
-
-## 快速开始
+## 五、本地开发与演示
 
 ### Windows 一键启动
 
-安装 Node.js 后，可以直接双击项目根目录的 `start-server.bat`，或在 PowerShell 中执行：
+安装 Node.js 22 后执行：
 
 ```powershell
 .\start-server.bat
 ```
 
-脚本会检查依赖、构建最新代码、启动平台 mock 与周报服务器，并以本地平台服务端身份申请一次性启动地址后打开浏览器。页面中不再提供用户 ID 输入入口。
+脚本会安装依赖、构建项目、启动本地平台 mock 和应用，并按照 `PLATFORM_ENTRY_MODE` 选择票据入口或 URL 用户 ID 入口打开浏览器。
 
-### 环境要求
+> `start-server.bat` 会启动 mock，只用于本地开发和演示，不用于生产部署。
 
-- Node.js 22 或更高版本。
-- npm。
-- Windows PowerShell、macOS 或 Linux 终端。
-
-### 1. 安装依赖
-
-```powershell
-cd D:\agent
-npm install
-```
-
-### 2. 启动平台 mock
-
-```powershell
-cd D:\agent\tools\external-app-api-mock
-npm start
-```
-
-mock 默认运行在 `http://localhost:18080`。
-
-### 3. 启动应用开发环境
-
-在另一个终端执行：
-
-```powershell
-cd D:\agent
-npm run dev
-```
-
-- 前端：`http://localhost:5173`
-- 业务 API：`http://localhost:3001`
-
-直接访问页面但没有平台会话时，应用会提示从平台打开。开发时推荐使用 `start-server.bat`；它通过与生产相同的启动接口建立本地会话。
-
-需要手动进入本地测试身份时，可在启动服务前设置 `ENABLE_LOCAL_TEST_ENTRY=true`，然后访问：
-
-```text
-http://localhost:3001/auth/local-test-entry?user_id=3
-```
-
-该入口只在非生产环境且请求来自本机回环地址时生效，生产环境始终返回 404。
-
-### 4. 写入展示数据
-
-保持 mock 和应用运行，然后执行：
-
-```powershell
-npm run seed:demo
-```
-
-脚本可重复运行，不会重复创建同一用户同一周的周报。
-
-## 演示用户
-
-mock 中的展示组织关系为：
-
-```text
-用户 1 → 用户 2 → 用户 3
-```
-
-| 用户 ID | 展示内容 | 预期统计 |
-| --- | --- | --- |
-| `1` | 仅本人周报 | 我的周报 13，审阅周报 0 |
-| `2` | 仅审阅用户 1 | 我的周报 0，审阅周报 13 |
-| `3` | 本人周报并间接审阅用户 1 | 我的周报 2，审阅周报 13 |
-
-设置 `WEEKLY_LAUNCH_USER_ID` 后运行 `start-server.bat`，即可验证对应身份。例如：
+切换展示用户：
 
 ```powershell
 $env:WEEKLY_LAUNCH_USER_ID="3"
 .\start-server.bat
 ```
 
-## 平台 API 依赖
+测试 URL 用户 ID 模式：
 
-应用只调用以下平台接口：
+```powershell
+$env:PLATFORM_ENTRY_MODE="url_user_id"
+$env:WEEKLY_LAUNCH_USER_ID="3"
+.\start-server.bat
+```
 
-| 方法 | 平台路径 | 用途 |
-| --- | --- | --- |
-| `GET` | `/external-app/context` | 读取当前租户、用户与应用能力 |
-| `GET` | `/external-app/organization-graph?user_id=...` | 获取用户及其全部上级路径 |
-| `GET` | `/external-app/agents?user_id=...` | 查询发起人的个人 Agent |
-| `POST` | `/external-app/agents/{agent_id}/runs` | 提交周报分析任务 |
+### 手动启动
 
-请求由服务端发出，并携带平台 API Key、租户 ID、用户 ID 和业务应用 Key。详细平台契约见 [external-app-api-reference..md](./external-app-api-reference..md)。
+终端一：
 
-## 身份传递
+```powershell
+cd tools\external-app-api-mock
+npm start
+```
 
-本应用不提供登录页面，也不接受浏览器发送的 `x-user-id`。推荐流程为：
+终端二：
 
-1. 用户在 NexusOS 平台完成登录并点击周报应用。
-2. 平台服务端携带共享启动密钥调用 `POST /auth/platform/launch`，传入可信的 `tenant_id` 和 `user_id`。
-3. 应用调用平台 `/external-app/context` 复核租户、用户和应用上下文。
-4. 应用返回默认 120 秒有效、只能使用一次的 `launch_url`。
-5. 平台将当前浏览器跳转到该地址。
-6. 应用消费票据并写入 HttpOnly、SameSite=Lax 会话 Cookie，然后进入主页面。
+```powershell
+npm install
+npm run dev
+```
 
-完整请求格式、平台服务端示例和可信反向代理备选方案见 [平台启动接入文档](./docs/platform-launch-integration.md)。
+- 前端开发服务器：`http://localhost:5173`
+- Express API：`http://localhost:3001`
+- 平台 mock：`http://localhost:18080`
 
-`PLATFORM_LAUNCH_SECRET`、`TRUSTED_PROXY_SECRET` 和 `NEXUSOS_API_KEY` 只能保存在服务端，不得写入前端构建、浏览器存储、URL 或公开仓库。
+写入幂等演示数据：
 
-## 应用 API
+```powershell
+npm run seed:demo
+```
 
-所有业务数据查询都会再次执行服务端权限校验。
+本地测试入口仅在非生产模式、显式设置 `ENABLE_LOCAL_TEST_ENTRY=true` 且请求来自本机回环地址时可用：
 
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `POST` | `/auth/platform/launch` | 平台服务端申请一次性用户启动地址 |
-| `GET` | `/auth/platform/consume` | 浏览器消费启动票据并建立 HttpOnly 会话 |
-| `POST` | `/auth/logout` | 注销当前应用会话 |
-| `GET` | `/api/session` | 获取当前用户、统计和平台能力 |
-| `GET` | `/api/reports` | 分页查询本人或待审阅周报 |
-| `POST` | `/api/reports` | 提交周报、附件并创建权限快照 |
-| `GET` | `/api/reports/:id` | 获取有权查看的周报详情 |
-| `DELETE` | `/api/reports/:id` | 作者删除周报及关联数据 |
-| `POST` | `/api/reports/:id/comments` | 有权审阅的上级发表评论 |
-| `POST` | `/api/reports/:id/analyze` | 作者或有查看权限的上级发起分析 |
-| `GET` | `/api/agent-jobs/:id` | 查询本人发起的分析任务 |
-| `GET` | `/api/agent-settings` | 获取平台可调用 Agent 和当前个人配置 |
-| `PUT` | `/api/agent-settings` | 校验并保存当前用户选择的 Agent |
-| `GET` | `/api/messages` | 查询当前用户的评论通知 |
-| `POST` | `/api/messages/:id/read` | 标记一条通知已读 |
-| `POST` | `/api/messages/read-all` | 将当前用户通知全部设为已读 |
-| `GET` | `/api/attachments/:id/download` | 下载有权访问的附件 |
-| `GET` | `/api/health` | 服务存活检查 |
-| `GET` | `/api/ready` | 数据库与附件目录就绪检查 |
+```text
+http://localhost:3001/auth/local-test-entry?user_id=3
+```
 
-`GET /api/reports` 支持以下查询参数：
+## 六、数据、附件与事务
 
-| 参数 | 说明 |
-| --- | --- |
-| `scope` | `mine`、`review` 或当前用户可见的全部范围 |
-| `q` | 匹配周报标题或正文 |
-| `author` | 匹配提交人姓名、邮箱或用户 ID |
-| `from` / `to` | 按周报日期筛选，格式为 `YYYY-MM-DD` |
-| `limit` / `offset` | 分页参数，单页最多 100 条 |
+关键数据表：
 
-搜索条件只会缩小当前用户已有的可见范围，不会扩大周报权限。
+- `reports`：周报标题、本周工作和下周计划。
+- `report_access`：作者与审阅人的权限快照。
+- `attachments`：附件元数据、路径和文本预览。
+- `comments`、`comment_reads`：评论与消息已读状态。
+- `agent_jobs`、`agent_analyses`：Agent 任务与结果。
+- `user_agent_preferences`：用户选择的个人 Agent。
+- `platform_launch_tickets`、`app_sessions`：启动票据和会话。
+- `audit_events`：关键业务操作审计。
 
-提交周报时，`POST /api/reports` 使用独立字段 `current_work` 和 `next_plan`。Agent 输入中的 `current_report`、`history_reports` 也使用相同分栏字段，不再依赖在一段正文中解析标题。
+SQLite 使用 WAL 和外键约束。提交周报时，周报、权限快照和附件元数据在同一个数据库事务内写入；事务失败会回滚数据库并清理已暂存附件。删除周报会通过外键级联删除评论、消息、附件元数据和 Agent 记录，再清理附件文件。
 
-## 附件规则
+组织关系在提交时固化为权限快照。后续组织变化不会自动改变历史周报权限；如果业务要求实时撤权，需要增加组织变更同步和历史权限重算任务。
 
-- 支持：`.txt`、`.md`、`.csv`、`.json`、`.log`、`.xml`、`.html`、`.xlsx`、`.xls`、`.docx`、`.pdf`。
-- 每份周报最多上传 5 个附件。
-- 单个附件最大 10 MB。
-- 服务端同时校验扩展名和文件签名，避免仅修改后缀绕过限制。
-- 文本、Excel、Word 和 PDF 会提取最多 12,000 个字符供 Agent 分析。
-- 生产环境必须连接 ClamAV `clamd`；扫描不可用、超时或发现恶意内容时上传失败。
+附件支持：`.txt`、`.md`、`.csv`、`.json`、`.log`、`.xml`、`.html`、`.xlsx`、`.xls`、`.docx`、`.pdf`。服务端会校验扩展名、文件签名、文件数、大小，并在生产环境调用 ClamAV。
 
-## 数据模型与权限
-
-关键表：
-
-- `users`：平台用户的本地展示信息。
-- `reports`：周次、标题、独立的 `current_work`（本周工作）与 `next_plan`（下周计划）；保留组合正文用于旧版本兼容与迁移。
-- `report_access`：作者与上级的周报权限快照。
-- `attachments`：附件元数据、存储路径和文本预览。
-- `comments`：上级评论。
-- `comment_reads`：评论通知已读状态。
-- `agent_jobs`：持久化 Agent 任务。
-- `agent_analyses`：分析结果。
-- `user_agent_preferences`：用户选择的周报分析 Agent。
-- `platform_launch_tickets`：短时效、一次性平台启动票据摘要。
-- `app_sessions`：HttpOnly Cookie 对应的服务端用户会话。
-- `audit_events`：创建、查看、评论、分析、删除等操作记录。
-- `schema_migrations`：数据库迁移版本。
-
-组织关系在提交周报时固化为权限快照。后续组织变动不会自动修改历史周报权限。如果生产业务要求实时撤权，需要增加组织变更同步任务并重新计算 `report_access`。
-
-## 常用命令
-
-| 命令 | 用途 |
-| --- | --- |
-| `npm run dev` | 同时启动前端和 API 开发服务 |
-| `npm run seed:demo` | 幂等写入演示周报数据 |
-| `npm run typecheck` | 检查前端和服务端 TypeScript |
-| `npm test` | 运行单元测试 |
-| `npm run test:ui-style` | 检查高频固定模糊层等 UI 回归问题 |
-| `npm run test:e2e` | 使用隔离数据库和题目 mock 运行端到端测试 |
-| `npm run build` | 构建生产前端和服务端 |
-| `npm start` | 运行已构建的单端口生产服务 |
-| `npm run backup` | 备份 SQLite 与附件 |
-| `npm run restore -- <目录>` | 从指定备份恢复数据 |
-
-## 测试
-
-建议提交前运行：
+## 七、测试与常用命令
 
 ```powershell
 npm run typecheck
@@ -311,123 +471,66 @@ npm run test:e2e
 npm run build
 ```
 
-端到端测试会自动启动题目提供的 mock 和隔离应用，覆盖：
+端到端测试使用独立临时数据库和严格平台 mock，覆盖：
 
-```text
-平台一次性启动票据与会话认证
-  → 平台用户同步
-  → 中文附件上传与文本提取
-  → 直接、间接及多个上级权限
-  → 权限内关键词、人员和日期筛选
-  → 上级评论、消息与已读状态
-  → 作者和审阅者 Agent 分析
-  → 伪造附件拒绝与无关用户拒绝
-  → 周报删除和关联清理
-```
+- 平台启动、票据防重放、会话和退出。
+- 平台 API 请求头、用户身份和 Agent 请求体契约。
+- 双栏周报、中文附件上传、提取和下载。
+- 直接、间接及多条审阅关系。
+- 搜索筛选、评论、消息和已读状态。
+- 作者与审阅人 Agent 分析。
+- 重复提交、伪造附件、越权访问拒绝。
+- 事务中途失败回滚、附件清理、级联删除和外键完整性。
 
-测试使用系统临时目录，不会修改开发数据库。
-
-## 生产部署
-
-### Node.js
-
-```powershell
-npm ci
-npm run build
-$env:NODE_ENV="production"
-npm start
-```
-
-生产构建由 Express 在 `http://localhost:3001` 同时提供前端静态文件和业务 API。
-
-### Docker
-
-```bash
-docker build -t weekly-review-platform .
-docker run --rm -p 3001:3001 \
-  --env-file .env.production \
-  -v weekly-data:/app/data \
-  -v weekly-uploads:/app/uploads \
-  weekly-review-platform
-```
-
-必须持久化 `/app/data` 和 `/app/uploads`。容器健康检查使用 `/api/ready`。
-
-### 生产必填配置
-
-| 环境变量 | 说明 |
+| 命令 | 用途 |
 | --- | --- |
-| `NEXUSOS_API_BASE_URL` | 平台 External App API 基础地址，包含 `/api/v1` |
-| `NEXUSOS_API_KEY` | 平台分配的服务端 API Key |
-| `NEXUSOS_TENANT_ID` | 租户 ID |
-| `NEXUSOS_APP_KEY` | 外部业务应用 Key |
-| `APP_PUBLIC_URL` | 周报应用对平台和用户可访问的 HTTPS 地址 |
-| `PLATFORM_LAUNCH_SECRET` | 平台与应用之间至少 32 位的启动共享密钥 |
-| `CORS_ALLOWED_ORIGINS` | 逗号分隔的前端来源白名单 |
-| `CLAMAV_HOST` | ClamAV `clamd` 地址 |
+| `npm run dev` | 启动前端和 API 开发服务 |
+| `npm run seed:demo` | 写入演示数据 |
+| `npm run typecheck` | 检查前后端 TypeScript |
+| `npm test` | 运行单元测试 |
+| `npm run test:ui-style` | 运行 UI 样式回归检查 |
+| `npm run test:e2e` | 运行隔离端到端测试 |
+| `npm run build` | 构建生产前端和服务端 |
+| `npm start` | 运行已构建服务，环境变量需提前注入 |
+| `npm run backup` | 备份 SQLite 与附件 |
+| `npm run restore -- <目录>` | 恢复指定备份 |
 
-其他常用配置见 [.env.example](./.env.example)：
+## 八、备份、恢复与扩展限制
 
-- `PORT`、`DATA_DIR`、`UPLOAD_DIR`
-- `LAUNCH_TICKET_TTL_SECONDS`、`SESSION_TTL_HOURS`、`SESSION_COOKIE_NAME`
-- `TRUSTED_IDENTITY_HEADER`、`TRUSTED_PROXY_SECRET_HEADER`、`TRUSTED_PROXY_SECRET`（仅可信代理模式）
-- `FRAME_ANCESTORS`
-- `PLATFORM_TIMEOUT_MS`
-- `RATE_LIMIT_PER_MINUTE`、`AGENT_RATE_LIMIT_PER_MINUTE`
-- `CLAMAV_PORT`、`CLAMAV_TIMEOUT_MS`
-
-如需嵌入平台 iframe，必须通过 `FRAME_ANCESTORS` 明确允许平台来源。
-
-## 备份与恢复
-
-备份会使用 SQLite backup API 创建数据库快照，并复制附件目录。为保证数据库和附件处于同一业务时点，建议备份与恢复前停止应用。
+备份：
 
 ```powershell
 $env:BACKUP_DIR="D:\weekly-backups"
 npm run backup
 ```
 
-恢复：
+恢复前必须停止应用：
 
 ```powershell
-npm run restore -- D:\weekly-backups\2026-07-13T12-00-00-000Z
+npm run restore -- D:\weekly-backups\2026-07-14T10-00-00-000Z
 ```
 
-生产环境应将备份同步到独立存储，并定期执行恢复演练。
+生产环境应把备份同步到独立存储，并定期进行恢复演练。
 
-## 部署约束
+当前 SQLite 与本地附件方案适用于单实例、低到中等并发的内部应用。需要水平扩展时，应先将 SQLite 迁移到 PostgreSQL、附件迁移到对象存储、Agent 任务迁移到独立队列，并接入集中日志、指标、告警和密钥管理。
 
-当前 SQLite 与本地附件目录方案适合单实例、低到中等并发的内部应用。不要让多个容器分别持有独立 SQLite 文件。
-
-需要多副本水平扩展时，建议先完成：
-
-1. 将 SQLite 迁移到 PostgreSQL。
-2. 将附件迁移到对象存储。
-3. 将 Agent 任务迁移到独立任务队列。
-4. 增加组织变更同步和历史权限重算。
-5. 接入集中日志、指标、告警和密钥管理。
-
-## 项目结构
+## 九、项目结构
 
 ```text
 .
 ├─ src/                          React 前端
-│  ├─ App.tsx                    主页面、列表与消息
-│  ├─ AllReportsArchive.tsx      周报搜索与筛选
-│  ├─ AgentSettings.tsx          平台 Agent 列表与个人配置
-│  └─ ReportDrawer.tsx           周报详情、评论与 Agent 分析
-├─ server/                       Express API、会话认证、SQLite、平台客户端与安全中间件
-├─ docs/                         平台启动协议与生产接入说明
-├─ scripts/                      演示数据、测试、备份、恢复与构建脚本
-├─ tools/external-app-api-mock/  题目提供并扩展的 External App API mock
+├─ server/                       Express、SQLite、认证和平台客户端
+├─ docs/                         平台启动接入说明
+├─ scripts/                      测试、演示、备份、恢复和构建脚本
+├─ tools/external-app-api-mock/  本地 External App API mock
 ├─ data/                         SQLite 数据目录，运行时生成
 ├─ uploads/                      附件目录，运行时生成
 ├─ external-app-api-reference..md
 ├─ .env.example
-├─ start-server.bat              Windows 一键构建与启动
-└─ Dockerfile
+├─ Dockerfile
+└─ start-server.bat
 ```
 
 ## 许可证
 
-仓库当前未声明开源许可证。部署或分发前，请由项目所有者补充适用的许可证和第三方依赖合规说明。
+仓库当前未声明开源许可证。对外分发前，请由项目所有者补充许可证和第三方依赖合规说明。

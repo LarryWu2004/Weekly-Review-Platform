@@ -1,8 +1,17 @@
 # 平台启动周报协作应用
 
-本应用不提供独立登录页，也不接受浏览器声明的用户 ID。用户必须先在 NexusOS 平台完成登录，再由平台服务端为该用户创建一次性应用启动地址。
+本应用不提供独立登录页。部署者通过 `PLATFORM_ENTRY_MODE` 选择入口：推荐的 `ticket` 模式由平台服务端创建一次性应用启动地址；简化的 `url_user_id` 模式允许平台把用户 ID 拼入应用 URL，但只能用于平台网关已阻止外部直访的可信环境。
 
 > `external-app-api-reference..md` 规定的是本应用调用平台 API 的认证方式，没有规定平台跳转外部应用的 SSO 协议。本文件定义的是周报应用向平台开放的启动契约。
+
+## 入口模式选择
+
+| 配置 | 平台打开方式 | 安全性 | 建议用途 |
+| --- | --- | --- | --- |
+| `PLATFORM_ENTRY_MODE=ticket` | 服务端申请一次性 `launch_url` | 能证明请求来自持有启动密钥的平台 | 正式生产，推荐 |
+| `PLATFORM_ENTRY_MODE=url_user_id` | `https://weekly.example.com/?user_id=<ID>` | URL 中的 ID 可被修改，不能独立证明访问者身份 | 内网演示或平台网关保护的入口 |
+
+两种模式都会调用平台 `/external-app/context` 复核租户、用户 ID 和应用 Key。该复核只能确认“平台存在这个上下文”，不能弥补 URL 模式缺少访问者身份认证的问题。
 
 ## 推荐流程：一次性启动票据
 
@@ -88,6 +97,25 @@ async function launchWeeklyReview({ tenantId, userId }) {
 
 应用只有在配置了 `TRUSTED_PROXY_SECRET` 时才启用此模式。不要把代理密钥放入浏览器、URL 或前端代码。
 
+## 简化流程：URL 拼接用户 ID
+
+应用侧配置：
+
+```env
+PLATFORM_ENTRY_MODE=url_user_id
+APP_PUBLIC_URL=https://weekly.example.com
+```
+
+平台直接跳转：
+
+```text
+https://weekly.example.com/?user_id=a3f0d748-5104-4703-a230-f5d3931a56b2
+```
+
+应用收到请求后会调用 `/external-app/context` 校验返回的 `tenant_id`、`user_id` 和 `app_key`，创建 HttpOnly 会话，然后返回 303 跳转到 `/`，避免用户 ID 继续留在地址栏。
+
+必须由平台网关限制该应用只能从已登录平台进入；如果应用地址可以被任意用户直接访问，任何人都能修改 `user_id` 模拟其他身份，因此禁止用于公网正式环境。
+
 ## 应用调用平台
 
 用户会话建立后，周报应用服务端继续依据 `external-app-api-reference..md` 调用：
@@ -103,6 +131,7 @@ async function launchWeeklyReview({ tenantId, userId }) {
 
 ```env
 NODE_ENV=production
+PLATFORM_ENTRY_MODE=ticket
 APP_PUBLIC_URL=https://weekly.example.com
 PLATFORM_LAUNCH_SECRET=<至少 32 位随机值>
 SESSION_TTL_HOURS=8

@@ -11,6 +11,11 @@ function flag(name: string, fallback = false) {
 }
 
 const production = process.env.NODE_ENV === "production";
+const platformEntryMode = (process.env.PLATFORM_ENTRY_MODE || "ticket").trim().toLowerCase();
+
+if (!(["ticket", "url_user_id"] as const).includes(platformEntryMode as "ticket" | "url_user_id")) {
+  throw new Error("PLATFORM_ENTRY_MODE 只能是 ticket 或 url_user_id");
+}
 
 function requiredInProduction(name: string, developmentFallback: string) {
   const value = process.env[name]?.trim();
@@ -29,7 +34,10 @@ export const config = {
   tenantId: requiredInProduction("NEXUSOS_TENANT_ID", "8133c675-3bb4-4ace-ba10-1e83299cf761"),
   appKey: requiredInProduction("NEXUSOS_APP_KEY", "platform-api-tester"),
   publicUrl: requiredInProduction("APP_PUBLIC_URL", "http://localhost:3001"),
-  platformLaunchSecret: requiredInProduction("PLATFORM_LAUNCH_SECRET", "local-platform-launch-secret-change-before-production"),
+  platformEntryMode: platformEntryMode as "ticket" | "url_user_id",
+  platformLaunchSecret: platformEntryMode === "ticket"
+    ? requiredInProduction("PLATFORM_LAUNCH_SECRET", "local-platform-launch-secret-change-before-production")
+    : (process.env.PLATFORM_LAUNCH_SECRET?.trim() || ""),
   launchTicketTtlSeconds: Math.max(30, Number(process.env.LAUNCH_TICKET_TTL_SECONDS || 120)),
   sessionTtlHours: Math.max(1, Number(process.env.SESSION_TTL_HOURS || 8)),
   sessionCookieName: process.env.SESSION_COOKIE_NAME || "weekly_session",
@@ -50,7 +58,7 @@ export const config = {
 if (production && config.corsOrigins.length === 0) {
   throw new Error("生产环境缺少必填配置：CORS_ALLOWED_ORIGINS");
 }
-if (production && config.platformLaunchSecret.length < 32) {
+if (production && config.platformEntryMode === "ticket" && config.platformLaunchSecret.length < 32) {
   throw new Error("生产环境 PLATFORM_LAUNCH_SECRET 长度不能少于 32 位");
 }
 if (config.proxySecret && config.proxySecret.length < 32) {

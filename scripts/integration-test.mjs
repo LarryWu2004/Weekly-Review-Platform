@@ -7,6 +7,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-weekly-"));
 const mockPort = 18081;
 const appPort = 3101;
+const urlEntryAppPort = 3102;
 const alice = "a3f0d748-5104-4703-a230-f5d3931a56b2";
 const manager = "f7f12c63-49c0-4ed4-a032-216ea27ad9d2";
 const director = "47d2767a-a540-43e2-a9f3-31c4835687d9";
@@ -78,11 +79,42 @@ try {
     DATA_DIR: path.join(temp, "data"),
     UPLOAD_DIR: path.join(temp, "uploads"),
   });
-  await Promise.all([waitFor(`http://localhost:${mockPort}/health`), waitFor(`http://localhost:${appPort}/api/health`)]);
+  start(process.execPath, [tsxCli, "server/index.ts"], root, {
+    PORT: String(urlEntryAppPort),
+    PLATFORM_ENTRY_MODE: "url_user_id",
+    NEXUSOS_API_BASE_URL: `http://localhost:${mockPort}/api/v1`,
+    APP_PUBLIC_URL: `http://localhost:${urlEntryAppPort}`,
+    DATA_DIR: path.join(temp, "url-entry-data"),
+    UPLOAD_DIR: path.join(temp, "url-entry-uploads"),
+  });
+  await Promise.all([
+    waitFor(`http://localhost:${mockPort}/health`),
+    waitFor(`http://localhost:${appPort}/api/health`),
+    waitFor(`http://localhost:${urlEntryAppPort}/api/health`),
+  ]);
 
   const readyResponse = await fetch(`http://localhost:${appPort}/api/ready`);
   const ready = await readyResponse.json();
   assert(readyResponse.status === 200 && ready.database === "ok" && ready.uploads === "ok", "readiness should verify both SQLite and upload storage");
+
+  const ticketModeUrlAttempt = await fetch(`http://localhost:${appPort}/?user_id=${encodeURIComponent(alice)}`, { redirect: "manual" });
+  assert(ticketModeUrlAttempt.status === 200 && !ticketModeUrlAttempt.headers.get("set-cookie"), "ticket mode must ignore a browser-supplied URL user ID");
+
+  const urlEntryResponse = await fetch(`http://localhost:${urlEntryAppPort}/?user_id=${encodeURIComponent(alice)}`, { redirect: "manual" });
+  assert(urlEntryResponse.status === 303 && urlEntryResponse.headers.get("location") === "/", "url_user_id mode should exchange the query identity for a clean application URL");
+  const urlEntryCookie = String(urlEntryResponse.headers.get("set-cookie") || "").split(";")[0];
+  assert(urlEntryCookie, "url_user_id mode should create an HttpOnly application session");
+  const urlEntrySessionResponse = await fetch(`http://localhost:${urlEntryAppPort}/api/session`, { headers: { Cookie: urlEntryCookie } });
+  const urlEntrySession = await urlEntrySessionResponse.json();
+  assert(urlEntrySessionResponse.status === 200 && urlEntrySession.current_user.id === alice, "the URL identity should resolve to the matching platform user session");
+  const invalidUrlIdentity = await fetch(`http://localhost:${urlEntryAppPort}/?user_id=%00`, { redirect: "manual" });
+  assert(invalidUrlIdentity.status === 400, "url_user_id mode should reject malformed user IDs");
+  const disabledTicketEndpoint = await fetch(`http://localhost:${urlEntryAppPort}/auth/platform/launch`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${launchSecret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ tenant_id: tenantId, user_id: alice }),
+  });
+  assert(disabledTicketEndpoint.status === 404, "url_user_id mode should expose only the selected entry mechanism");
 
   const spoofedBrowserIdentity = await fetch(`http://localhost:${appPort}/api/session`, { headers: { "x-user-id": alice } });
   assert(spoofedBrowserIdentity.status === 401, "browser-supplied x-user-id must not authenticate without a platform session");

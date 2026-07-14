@@ -53,6 +53,9 @@ const asyncRoute = (handler: AsyncHandler) => (req: Request, res: Response, next
 };
 
 app.post("/auth/platform/launch", rateLimit(60, "platform-launch"), asyncRoute(async (req, res) => {
+  if (config.platformEntryMode !== "ticket") {
+    throw new HttpError(404, "not_found", "平台票据入口未启用");
+  }
   if (!authorizePlatformLaunch(String(req.header("authorization") || ""))) {
     throw new HttpError(401, "invalid_launch_credential", "平台启动凭据无效");
   }
@@ -669,6 +672,25 @@ app.get("/api/attachments/:id/download", (req, res) => {
   writeAudit({ userId, action: "attachment.download", entityType: "attachment", entityId: attachmentId, requestId: req.requestId, metadata: { report_id: attachment.report_id } });
   res.download(attachment.storage_path, attachment.original_name);
 });
+
+app.get("/", rateLimit(60, "url-user-entry"), asyncRoute(async (req, res, next) => {
+  if (config.platformEntryMode !== "url_user_id" || req.query.user_id === undefined) return next();
+  const userId = validUserId(req.query.user_id);
+  if (!userId) throw new HttpError(400, "invalid_identity", "URL 中的用户 ID 格式无效");
+
+  const context = await platform.context(userId) as { tenant_id?: string; user_id?: string; app?: { app_key?: string } };
+  if (context.tenant_id !== config.tenantId || context.user_id !== userId || context.app?.app_key !== config.appKey) {
+    throw new HttpError(403, "platform_context_mismatch", "平台返回的用户或应用上下文不匹配");
+  }
+
+  const launch = createLaunchTicket(userId, "/");
+  const session = consumeLaunchTicket(launch.ticket);
+  if (!session) throw new HttpError(500, "session_creation_failed", "URL 用户会话创建失败");
+  res.setHeader("Cache-Control", "no-store");
+  res.cookie(config.sessionCookieName, session.sessionToken, sessionCookieOptions);
+  writeAudit({ userId, action: "session.url_user_id_started", entityType: "session", requestId: req.requestId });
+  res.redirect(303, "/");
+}));
 
 const clientDist = path.resolve("dist");
 if (fs.existsSync(clientDist)) {

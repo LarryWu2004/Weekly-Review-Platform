@@ -6,6 +6,7 @@ cd /d "%ROOT%"
 title Weekly Review Launcher
 
 if not defined APP_PUBLIC_URL set "APP_PUBLIC_URL=http://localhost:3001"
+if not defined PLATFORM_ENTRY_MODE set "PLATFORM_ENTRY_MODE=ticket"
 if not defined PLATFORM_LAUNCH_SECRET set "PLATFORM_LAUNCH_SECRET=local-platform-launch-secret-change-before-production"
 if not defined NEXUSOS_TENANT_ID set "NEXUSOS_TENANT_ID=8133c675-3bb4-4ace-ba10-1e83299cf761"
 if not defined WEEKLY_LAUNCH_USER_ID set "WEEKLY_LAUNCH_USER_ID=a3f0d748-5104-4703-a230-f5d3931a56b2"
@@ -79,8 +80,15 @@ if errorlevel 1 (
 
 echo.
 echo [OK] Weekly Review Platform is running.
-echo      Creating a local platform session for %WEEKLY_LAUNCH_USER_ID% ...
+echo      Entry mode: %PLATFORM_ENTRY_MODE%
+echo      Creating a local session for %WEEKLY_LAUNCH_USER_ID% ...
 echo.
+if /i "%PLATFORM_ENTRY_MODE%"=="url_user_id" (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$url = $env:APP_PUBLIC_URL + '/?user_id=' + [uri]::EscapeDataString($env:WEEKLY_LAUNCH_USER_ID); Start-Process $url"
+  if errorlevel 1 goto :failed
+  exit /b 0
+)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$headers = @{ Authorization = 'Bearer ' + $env:PLATFORM_LAUNCH_SECRET; 'Content-Type' = 'application/json' };" ^
   "$body = @{ tenant_id = $env:NEXUSOS_TENANT_ID; user_id = $env:WEEKLY_LAUNCH_USER_ID } | ConvertTo-Json;" ^
