@@ -15,6 +15,18 @@ npm start
 http://localhost:18080/api/v1
 ```
 
+## 展示用户
+
+mock 内置一条用于页面演示的组织链：`1 → 2 → 3`，其中箭头表示“下级 → 上级”。运行项目根目录的 `npm run seed:demo` 后：
+
+| 用户 ID | 名称 | 本人周报 | 可审阅周报 |
+| --- | --- | ---: | ---: |
+| `1` | 展示用户 1 | 3 | 0 |
+| `2` | 展示用户 2 | 0 | 3 |
+| `3` | 展示用户 3 | 2 | 3 |
+
+可以在周报应用的“本地模拟页面”中直接输入 `1`、`2` 或 `3` 查看三种身份视角。
+
 健康检查：
 
 ```powershell
@@ -55,6 +67,8 @@ GET  /api/v1/external-app/data-sources
 GET  /api/v1/external-app/data-sources/{source_id}
 POST /api/v1/external-app/structured-query/run
 ```
+
+Agent 列表接口会为每个已知用户返回 3 个可选个人 Agent，用于验证外部应用的 Agent 配置和调用流程。
 
 ## PowerShell 示例
 
@@ -130,5 +144,5 @@ console.log(run.answer);
 
 - mock server 不做真实 API Key 鉴权。
 - mock server 不连接数据库、不调用真实 Agent。
-- mock server 固定返回一组示例租户、用户、Agent、数据源和组织关系。
+- mock server 固定返回一组示例租户、用户、多个个人 Agent、数据源和组织关系。
 - 对接真实平台时，以平台返回的 `/api/v1/external-app/apis` manifest 和实际授权配置为准。

@@ -2,10 +2,21 @@ export type User = { id: string; name: string; email: string };
 
 export type Session = {
   current_user: User;
-  users: User[];
-  stats: { mine: number; review: number; comments: number };
+  stats: { mine: number; review: number; comments: number; unread_messages: number };
   capabilities: string[];
-  demo_mode: boolean;
+};
+
+export type Message = {
+  id: string;
+  report_id: string;
+  report_title: string;
+  report_week_start: string;
+  commenter_user_id: string;
+  commenter_name: string;
+  commenter_email: string;
+  content: string;
+  created_at: string;
+  read_at: string | null;
 };
 
 export type Report = {
@@ -16,10 +27,13 @@ export type Report = {
   week_start: string;
   title: string;
   content: string;
+  current_work: string;
+  next_plan: string;
   status: string;
   created_at: string;
   viewer_depth: number | null;
   comment_count: number;
+  reviewer_comment_count: number;
   attachment_count: number;
   analysis_count: number;
 };

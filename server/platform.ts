@@ -58,8 +58,12 @@ export type OrganizationGraph = {
 export type AgentProfile = {
   id: string;
   name: string;
+  description?: string;
+  agent_key?: string;
   runtime_type: string;
+  scope?: string;
   owner_user_id: string;
+  status?: string;
 };
 
 export const platform = {
@@ -88,7 +92,7 @@ export const platform = {
       method: "POST",
       body: JSON.stringify({
         user_id: userId,
-        objective: "请评价本次周报内容，结合历史周报和上级评论指出不足，并给出具体、可执行的改进建议",
+        objective: "请评价本次周报内容，结合历史周报和已有评论指出不足，并给出具体、可执行的改进建议",
         input,
         mode: "task",
         runtime_hint: { provider: "eap_native" },

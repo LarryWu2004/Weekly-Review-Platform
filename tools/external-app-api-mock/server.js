@@ -4,9 +4,13 @@ import { randomUUID } from "node:crypto";
 const port = Number(process.env.PORT || 18080);
 const tenantId = process.env.MOCK_TENANT_ID || "8133c675-3bb4-4ace-ba10-1e83299cf761";
 const appKey = process.env.MOCK_APP_KEY || "platform-api-tester";
+const apiKey = process.env.MOCK_API_KEY || "mock-api-key";
 const userId = process.env.MOCK_USER_ID || "a3f0d748-5104-4703-a230-f5d3931a56b2";
+const strictContract = ["1", "true", "yes", "on"].includes(String(process.env.MOCK_STRICT_CONTRACT || "").toLowerCase());
+const rollbackUserId = process.env.MOCK_ROLLBACK_USER_ID || "";
 const sourceId = process.env.MOCK_DATA_SOURCE_ID || "c647bb88-4e05-4306-9646-2234c918bcd1";
 const agentId = process.env.MOCK_AGENT_ID || "2cc6e194-65ab-4096-a51a-99ccd05d662f";
+const requestEvidence = [];
 
 const now = () => new Date().toISOString();
 
@@ -24,6 +28,9 @@ const users = [
   { id: userId, tenant_id: tenantId, email: "alice@example.com", name: "Alice", status: "active", metadata: {}, roles: [] },
   { id: "f7f12c63-49c0-4ed4-a032-216ea27ad9d2", tenant_id: tenantId, email: "manager@example.com", name: "Manager", status: "active", metadata: {}, roles: [] },
   { id: "47d2767a-a540-43e2-a9f3-31c4835687d9", tenant_id: tenantId, email: "director@example.com", name: "Director", status: "active", metadata: {}, roles: [] },
+  { id: "1", tenant_id: tenantId, email: "user1@example.com", name: "展示用户 1", status: "active", metadata: { demo: true }, roles: [] },
+  { id: "2", tenant_id: tenantId, email: "user2@example.com", name: "展示用户 2", status: "active", metadata: { demo: true }, roles: [] },
+  { id: "3", tenant_id: tenantId, email: "user3@example.com", name: "展示用户 3", status: "active", metadata: { demo: true }, roles: [] },
 ];
 
 const dataSource = {
@@ -49,9 +56,9 @@ const dataSource = {
 const agent = {
   id: agentId,
   tenant_id: tenantId,
-  agent_key: "codex-dev-agent",
-  name: "Codex Dev Agent",
-  description: "用于开发任务协作的个人 Agent。",
+  agent_key: "weekly-review-agent",
+  name: "周报综合评阅 Agent",
+  description: "综合分析工作成果、问题与下一步计划。",
   runtime_type: "eap_native",
   scope: "user",
   owner_user_id: userId,
@@ -203,43 +210,72 @@ function validateHeaders(req, res, ctx) {
     sendError(res, 404, "app_not_found", "business app not found", ctx);
     return false;
   }
+  if (strictContract) {
+    if (req.headers.authorization !== `Bearer ${apiKey}`) {
+      sendError(res, 401, "invalid_api_key", "Authorization bearer token is missing or invalid", ctx);
+      return false;
+    }
+    if (req.headers["x-tenant-id"] !== tenantId) {
+      sendError(res, 403, "tenant_mismatch", "x-tenant-id does not match the mock tenant", ctx);
+      return false;
+    }
+    if (!req.headers["x-user-id"] || !req.headers["x-request-id"]) {
+      sendError(res, 400, "missing_request_context", "x-user-id and x-request-id are required in strict contract mode", ctx);
+      return false;
+    }
+  }
   return true;
 }
 
 function organizationGraph(selectedUserId, traceId) {
-  const relations = [
-    {
-      id: "rel-1",
+  if (rollbackUserId && selectedUserId === rollbackUserId) {
+    const rollbackUser = { id: rollbackUserId, tenant_id: tenantId, email: "rollback@example.com", name: "事务回滚测试用户", status: "active", metadata: { test_only: true }, roles: [] };
+    const missingReviewer = { id: "missing-reviewer-for-rollback", tenant_id: tenantId, email: "missing@example.com", name: "未同步审阅人", status: "active", metadata: { test_only: true }, roles: [] };
+    return {
+      contract: "external_app.organization_graph.v1",
       tenant_id: tenantId,
-      supervisor_user_id: users[1].id,
-      subordinate_user_id: users[0].id,
-      relation_type: "direct",
-      status: "active",
-      metadata: {},
-      supervisor: { id: users[1].id, name: users[1].name, email: users[1].email },
-      subordinate: { id: users[0].id, name: users[0].name, email: users[0].email },
-      created_at: now(),
-      updated_at: now(),
-    },
-    {
-      id: "rel-2",
-      tenant_id: tenantId,
-      supervisor_user_id: users[2].id,
-      subordinate_user_id: users[1].id,
-      relation_type: "direct",
-      status: "active",
-      metadata: {},
-      supervisor: { id: users[2].id, name: users[2].name, email: users[2].email },
-      subordinate: { id: users[1].id, name: users[1].name, email: users[1].email },
-      created_at: now(),
-      updated_at: now(),
-    },
+      app_key: appKey,
+      users: [rollbackUser],
+      relations: [],
+      superior_paths: [{
+        subordinate_user_id: rollbackUser.id,
+        supervisor_user_id: missingReviewer.id,
+        depth: 1,
+        subordinate: rollbackUser,
+        supervisor: missingReviewer,
+      }],
+      counts: { users: 1, relations: 0, superior_paths: 1 },
+      trace_id: traceId,
+    };
+  }
+  const relationPairs = [
+    { id: "rel-1", supervisor: users[1], subordinate: users[0] },
+    { id: "rel-2", supervisor: users[2], subordinate: users[1] },
+    { id: "rel-demo-1-2", supervisor: users[4], subordinate: users[3] },
+    { id: "rel-demo-2-3", supervisor: users[5], subordinate: users[4] },
   ];
-  const paths = [
+  const relations = relationPairs.map((item) => ({
+    id: item.id,
+    tenant_id: tenantId,
+    supervisor_user_id: item.supervisor.id,
+    subordinate_user_id: item.subordinate.id,
+    relation_type: "direct",
+    status: "active",
+    metadata: {},
+    supervisor: { id: item.supervisor.id, name: item.supervisor.name, email: item.supervisor.email },
+    subordinate: { id: item.subordinate.id, name: item.subordinate.name, email: item.subordinate.email },
+    created_at: now(),
+    updated_at: now(),
+  }));
+  const allPaths = [
     { subordinate_user_id: users[0].id, supervisor_user_id: users[1].id, depth: 1, subordinate: users[0], supervisor: users[1] },
     { subordinate_user_id: users[0].id, supervisor_user_id: users[2].id, depth: 2, subordinate: users[0], supervisor: users[2] },
     { subordinate_user_id: users[1].id, supervisor_user_id: users[2].id, depth: 1, subordinate: users[1], supervisor: users[2] },
-  ].filter((item) => !selectedUserId || item.subordinate_user_id === selectedUserId);
+    { subordinate_user_id: users[3].id, supervisor_user_id: users[4].id, depth: 1, subordinate: users[3], supervisor: users[4] },
+    { subordinate_user_id: users[3].id, supervisor_user_id: users[5].id, depth: 2, subordinate: users[3], supervisor: users[5] },
+    { subordinate_user_id: users[4].id, supervisor_user_id: users[5].id, depth: 1, subordinate: users[4], supervisor: users[5] },
+  ];
+  const paths = allPaths.filter((item) => !selectedUserId || item.subordinate_user_id === selectedUserId);
   return {
     contract: "external_app.organization_graph.v1",
     tenant_id: tenantId,
@@ -252,10 +288,10 @@ function organizationGraph(selectedUserId, traceId) {
   };
 }
 
-function context(traceId) {
+function context(selectedUserId, traceId) {
   return {
     tenant_id: tenantId,
-    user_id: userId,
+    user_id: selectedUserId,
     app: { app_key: appKey, name: "平台 API 测试台", status: "active", runtime_provider: "external_app" },
     external_app: {
       adapter_key: "external_app.api_tester.v1",
@@ -269,6 +305,29 @@ function context(traceId) {
     },
     trace_id: traceId,
   };
+}
+
+function agentsForUser(selectedUserId) {
+  if (!users.some((item) => item.id === selectedUserId)) return [];
+  const baseId = selectedUserId === userId ? agentId : `mock-agent-${selectedUserId}`;
+  const common = { ...agent, owner_user_id: selectedUserId };
+  return [
+    { ...common, id: baseId },
+    {
+      ...common,
+      id: `${baseId}-metrics`,
+      agent_key: "weekly-metrics-agent",
+      name: "目标与指标 Agent",
+      description: "重点检查目标、数据指标和可验证的交付结果。",
+    },
+    {
+      ...common,
+      id: `${baseId}-risk`,
+      agent_key: "weekly-risk-agent",
+      name: "风险识别 Agent",
+      description: "重点识别阻塞、依赖、风险和需要的管理支持。",
+    },
+  ];
 }
 
 function structuredQuery(body) {
@@ -331,48 +390,92 @@ async function handle(req, res) {
     return sendJson(res, 200, { status: "ok", service: "external-app-api-mock", base_url: `http://localhost:${port}/api/v1` }, ctx);
   }
 
+  if (req.method === "GET" && path === "/__test/requests") {
+    return sendJson(res, 200, { items: requestEvidence, count: requestEvidence.length }, ctx);
+  }
+
   if (!path.startsWith("/api/v1/external-app/")) {
     return sendError(res, 404, "not_found", "mock route not found", ctx);
   }
   if (!validateHeaders(req, res, ctx)) return;
+
+  const evidence = {
+    method: req.method,
+    path,
+    authorization_present: typeof req.headers.authorization === "string" && req.headers.authorization.startsWith("Bearer "),
+    tenant_id: String(req.headers["x-tenant-id"] || ""),
+    user_id: String(req.headers["x-user-id"] || ""),
+    app_key: String(req.headers["x-business-app-key"] || req.headers["x-app-key"] || ""),
+    request_id: String(req.headers["x-request-id"] || ""),
+    query_user_id: url.searchParams.get("user_id") || "",
+    body_contract_valid: null,
+  };
+  requestEvidence.push(evidence);
 
   try {
     if (req.method === "GET" && path === "/api/v1/external-app/apis") {
       return sendJson(res, 200, { contract: "external_app.api_manifest.v1", tenant_id: tenantId, app_key: appKey, items: apiManifestItems, count: apiManifestItems.length, trace_id: ctx.traceId }, ctx);
     }
     if (req.method === "GET" && path === "/api/v1/external-app/context") {
-      return sendJson(res, 200, context(ctx.traceId), ctx);
+      const requestedUserId = String(req.headers["x-user-id"] || userId);
+      return sendJson(res, 200, context(requestedUserId, ctx.traceId), ctx);
     }
     if (req.method === "GET" && path === "/api/v1/external-app/organization-graph") {
+      if (strictContract && evidence.query_user_id !== evidence.user_id) {
+        return sendError(res, 400, "identity_mismatch", "organization graph query user_id must match x-user-id", ctx);
+      }
       return sendJson(res, 200, organizationGraph(url.searchParams.get("user_id") || "", ctx.traceId), ctx);
     }
     if (req.method === "GET" && path === "/api/v1/external-app/agents") {
       const requestedUserId = url.searchParams.get("user_id") || "";
       if (!requestedUserId) return sendError(res, 400, "missing_user_id", "user_id is required", ctx);
-      const items = requestedUserId === userId ? [agent] : [];
+      if (strictContract && requestedUserId !== evidence.user_id) {
+        return sendError(res, 400, "identity_mismatch", "agents query user_id must match x-user-id", ctx);
+      }
+      const items = agentsForUser(requestedUserId);
       return sendJson(res, 200, { contract: "external_app.agents.v1", tenant_id: tenantId, app_key: appKey, user_id: requestedUserId, items, count: items.length, trace_id: ctx.traceId }, ctx);
     }
     const agentRunMatch = path.match(/^\/api\/v1\/external-app\/agents\/([^/]+)\/runs$/);
     if (req.method === "POST" && agentRunMatch) {
       const body = await readBody(req);
       const requestedAgentId = decodeURIComponent(agentRunMatch[1]);
-      if (requestedAgentId !== agent.id) return sendError(res, 403, "resource_not_bound", "agent is not bound to this external app", ctx);
       if (!body.user_id) return sendError(res, 400, "missing_user_id", "user_id is required", ctx);
-      if (body.user_id !== userId) return sendError(res, 403, "agent_not_accessible", "agent does not belong to this user", ctx);
+      const selectedAgent = agentsForUser(body.user_id).find((item) => item.id === requestedAgentId);
+      if (!selectedAgent) return sendError(res, 403, "resource_not_bound", "agent is not bound to this external app", ctx);
       if (!body.objective) return sendError(res, 400, "missing_objective", "objective is required", ctx);
+      evidence.body_contract_valid = body.user_id === evidence.user_id
+        && typeof body.objective === "string"
+        && body.objective.length > 0
+        && body.mode === "task"
+        && body.runtime_hint?.provider === "eap_native"
+        && body.inject_context === false
+        && body.inject_memories === false
+        && body.capture_memory === false
+        && typeof body.input?.current_report?.title === "string"
+        && typeof body.input?.current_report?.current_work === "string"
+        && typeof body.input?.current_report?.next_plan === "string"
+        && Array.isArray(body.input?.current_report?.attachments)
+        && Array.isArray(body.input?.history_reports)
+        && Array.isArray(body.input?.comments);
+      if (strictContract && !evidence.body_contract_valid) {
+        return sendError(res, 400, "invalid_agent_run_contract", "Agent run request does not match the documented contract", ctx);
+      }
       const runId = randomUUID();
+      const weeklySectionsReceived = typeof body.input?.current_report?.current_work === "string"
+        && typeof body.input?.current_report?.next_plan === "string";
+      const answer = `${selectedAgent.name} 已完成任务：${body.objective}${weeklySectionsReceived ? "；已接收分栏的本周工作与下周计划" : ""}`;
       return sendJson(res, 201, {
         contract: "external_app.agent_run.v1",
         tenant_id: tenantId,
         app_key: appKey,
         user_id: body.user_id,
-        agent,
+        agent: selectedAgent,
         agent_run_id: runId,
         status: "succeeded",
-        answer: `Mock Agent 已完成任务：${body.objective}`,
+        answer,
         tool_results: [],
         usage: { step_count: 2, runtime_provider: body.runtime_hint?.provider || "eap_native" },
-        run: { id: runId, status: "succeeded", objective: body.objective, output: { answer: `Mock Agent 已完成任务：${body.objective}` } },
+        run: { id: runId, status: "succeeded", objective: body.objective, output: { answer } },
         steps: [
           { step_index: 1, step_type: "mock_plan", content: "解析任务目标" },
           { step_index: 2, step_type: "mock_answer", content: "返回模拟执行结果" },

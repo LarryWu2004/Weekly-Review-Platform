@@ -14,6 +14,7 @@
     "test": "vitest run --exclude dist-server/**",
     "test:ui-style": "node scripts/ui-style-regression.mjs",
     "test:e2e": "node scripts/integration-test.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs"
   },

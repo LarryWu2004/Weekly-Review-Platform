@@ -36,18 +36,21 @@ export function requestSecurity(req: Request, res: Response, next: NextFunction)
 
   if (req.method === "OPTIONS" || !req.path.startsWith("/api/") || req.path === "/api/health" || req.path === "/api/ready") return next();
 
-  if (config.production) {
+  if (req.authenticatedUserId) return next();
+
+  if (config.proxySecret) {
     const proxySecret = String(req.header(config.proxySecretHeader) || "");
     if (!proxySecret || !safeEqual(proxySecret, config.proxySecret)) {
       return next(new HttpError(401, "untrusted_proxy", "请求未通过可信身份网关"));
     }
+    const userId = String(req.header(config.identityHeader) || "").trim();
+    if (!userId) return next(new HttpError(401, "unauthenticated", "未获取到可信用户身份"));
+    if (userId.length > 200 || /[\u0000-\u001f\u007f]/.test(userId)) return next(new HttpError(400, "invalid_identity", "用户身份格式无效"));
+    req.authenticatedUserId = userId;
+    return next();
   }
 
-  const userId = String(req.header(config.identityHeader) || config.defaultUserId).trim();
-  if (!userId) return next(new HttpError(401, "unauthenticated", "未获取到可信用户身份"));
-  if (userId.length > 200 || /[\u0000-\u001f\u007f]/.test(userId)) return next(new HttpError(400, "invalid_identity", "用户身份格式无效"));
-  req.authenticatedUserId = userId;
-  next();
+  return next(new HttpError(401, "unauthenticated", "请从平台进入周报协作应用"));
 }
 
 type RateEntry = { count: number; resetAt: number };

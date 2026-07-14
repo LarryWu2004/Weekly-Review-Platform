@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { normalizeMultipartFilename } from "./filenames.js";
+import { splitReportContent } from "./report-content.js";
 
 const dataDir = config.dataDir;
 fs.mkdirSync(dataDir, { recursive: true });
@@ -28,6 +29,8 @@ db.exec(`
     week_start TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
+    current_work TEXT NOT NULL DEFAULT '',
+    next_plan TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'submitted',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -71,6 +74,16 @@ db.exec(`
     FOREIGN KEY (commenter_user_id) REFERENCES users(id)
   );
 
+  CREATE TABLE IF NOT EXISTS comment_reads (
+    tenant_id TEXT NOT NULL,
+    comment_id TEXT NOT NULL,
+    reader_user_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, comment_id, reader_user_id),
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (reader_user_id) REFERENCES users(id)
+  );
+
   CREATE TABLE IF NOT EXISTS agent_analyses (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -99,6 +112,34 @@ db.exec(`
     FOREIGN KEY (analysis_id) REFERENCES agent_analyses(id) ON DELETE SET NULL
   );
 
+  CREATE TABLE IF NOT EXISTS user_agent_preferences (
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    selected_agent_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS platform_launch_tickets (
+    token_hash TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    redirect_path TEXT NOT NULL DEFAULT '/',
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS app_sessions (
+    token_hash TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
@@ -118,6 +159,8 @@ db.transaction(() => {
     }
     db.prepare(`UPDATE ${table} SET tenant_id = ? WHERE tenant_id = ''`).run(config.tenantId);
   }
+  if (!hasColumn("reports", "current_work")) db.exec("ALTER TABLE reports ADD COLUMN current_work TEXT NOT NULL DEFAULT ''");
+  if (!hasColumn("reports", "next_plan")) db.exec("ALTER TABLE reports ADD COLUMN next_plan TEXT NOT NULL DEFAULT ''");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS audit_events (
@@ -135,12 +178,32 @@ db.transaction(() => {
     CREATE INDEX IF NOT EXISTS idx_access_tenant_viewer ON report_access(tenant_id, viewer_user_id, report_id);
     CREATE INDEX IF NOT EXISTS idx_attachments_tenant_report ON attachments(tenant_id, report_id);
     CREATE INDEX IF NOT EXISTS idx_comments_tenant_report ON comments(tenant_id, report_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_comment_reads_tenant_reader ON comment_reads(tenant_id, reader_user_id, read_at);
     CREATE INDEX IF NOT EXISTS idx_analyses_tenant_report ON agent_analyses(tenant_id, report_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_jobs_tenant_report ON agent_jobs(tenant_id, report_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_jobs_status ON agent_jobs(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_preferences_user ON user_agent_preferences(tenant_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_launch_tickets_expiry ON platform_launch_tickets(tenant_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_app_sessions_expiry ON app_sessions(tenant_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_app_sessions_user ON app_sessions(tenant_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_tenant_created ON audit_events(tenant_id, created_at DESC);
   `);
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)").run(new Date().toISOString());
+})();
+
+const legacyReports = db.prepare(`
+  SELECT id, content FROM reports WHERE current_work = '' AND content <> ''
+`).all() as Array<{ id: string; content: string }>;
+const updateReportSections = db.prepare("UPDATE reports SET current_work = ?, next_plan = ? WHERE id = ?");
+db.transaction(() => {
+  for (const report of legacyReports) {
+    const sections = splitReportContent(report.content);
+    updateReportSections.run(sections.currentWork, sections.nextPlan, report.id);
+  }
 })();
 
 const legacyAttachmentNames = db.prepare("SELECT id, original_name FROM attachments").all() as Array<{

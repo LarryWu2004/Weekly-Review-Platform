@@ -11,6 +11,8 @@ beforeAll(async () => {
     NEXUSOS_API_KEY: "test-key",
     NEXUSOS_TENANT_ID: "tenant-test",
     NEXUSOS_APP_KEY: "weekly-test",
+    APP_PUBLIC_URL: "https://weekly.example.test",
+    PLATFORM_LAUNCH_SECRET: "a-strong-test-only-launch-secret-123456",
     TRUSTED_PROXY_SECRET: "a-strong-test-only-proxy-secret-123456",
     CORS_ALLOWED_ORIGINS: "https://weekly.example.test",
     CLAMAV_HOST: "clamav.example.test",

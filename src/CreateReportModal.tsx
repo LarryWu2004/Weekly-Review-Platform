@@ -4,8 +4,7 @@ import { api } from "./api";
 import type { ReportDetail } from "./types";
 import { currentMonday } from "./ui";
 
-export function CreateReportModal({ userId, onClose, onCreated }: {
-  userId: string;
+export function CreateReportModal({ onClose, onCreated }: {
   onClose: () => void;
   onCreated: (report: ReportDetail) => void;
 }) {
@@ -20,7 +19,7 @@ export function CreateReportModal({ userId, onClose, onCreated }: {
     const formData = new FormData(event.currentTarget);
     files.forEach((file) => formData.append("attachments", file));
     try {
-      onCreated(await api<ReportDetail>("/api/reports", userId, { method: "POST", body: formData }));
+      onCreated(await api<ReportDetail>("/api/reports", { method: "POST", body: formData }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "提交失败");
     } finally {
@@ -40,10 +39,16 @@ export function CreateReportModal({ userId, onClose, onCreated }: {
             <label><span>周起始日</span><input required type="date" name="week_start" defaultValue={currentMonday()} /></label>
             <label><span>标题</span><input required name="title" placeholder="例如：第 30 周周报" maxLength={80} /></label>
           </div>
-          <label className="content-field">
-            <span>本周工作与下周计划</span>
-            <textarea required name="content" rows={12} placeholder={"建议包含：\n1. 已完成事项与可衡量结果\n2. 风险、阻塞与需要的支持\n3. 下周目标与负责人"} />
-          </label>
+          <div className="report-editor-stack">
+            <label className="content-field report-editor">
+              <span className="report-editor-heading"><em>01</em><span><strong>本周工作</strong><small>记录已完成事项、成果以及风险阻塞</small></span></span>
+              <textarea required name="current_work" rows={7} maxLength={30000} placeholder={"例如：\n1. 已完成事项与可衡量结果\n2. 当前风险、阻塞和需要的支持"} />
+            </label>
+            <label className="content-field report-editor">
+              <span className="report-editor-heading"><em>02</em><span><strong>下周计划</strong><small>明确下一步目标、行动和负责人</small></span></span>
+              <textarea required name="next_plan" rows={5} maxLength={20000} placeholder={"例如：\n1. 下周目标与验收标准\n2. 具体行动、负责人和完成时间"} />
+            </label>
+          </div>
           <label className="upload-zone">
             <input type="file" multiple hidden onChange={(event) => setFiles(Array.from(event.target.files || []).slice(0, 5))} />
             <Paperclip size={20} /><span><strong>添加附件</strong>　单个文件不超过 10 MB，最多 5 个</span>
@@ -51,7 +56,7 @@ export function CreateReportModal({ userId, onClose, onCreated }: {
           {files.length ? <div className="selected-files">{files.map((file) => <span key={`${file.name}-${file.size}`}><File size={14} />{file.name}</span>)}</div> : null}
           {error ? <p className="form-error">{error}</p> : null}
           <footer className="form-actions">
-            <p>提交后，组织关系中的所有上级将获得查看权限。</p>
+            <p>提交后，组织关系中具备审阅权限的相关成员将获得查看权限。</p>
             <div>
               <button type="button" className="text-button" onClick={onClose}>取消</button>
               <button className="primary-button" disabled={submitting}>
