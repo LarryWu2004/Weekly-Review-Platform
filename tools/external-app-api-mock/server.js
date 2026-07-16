@@ -409,7 +409,11 @@ async function handle(req, res) {
     request_id: String(req.headers["x-request-id"] || ""),
     query_user_id: url.searchParams.get("user_id") || "",
     body_contract_valid: null,
-    plan_follow_up_received: null,
+    attachment_comparison_received: null,
+    current_report_week: null,
+    previous_report_present: null,
+    previous_attachment_received: null,
+    only_current_and_previous: null,
     plain_text_requested: null,
     inject_memories: null,
     capture_memory: null,
@@ -447,8 +451,14 @@ async function handle(req, res) {
       const selectedAgent = agentsForUser(body.user_id).find((item) => item.id === requestedAgentId);
       if (!selectedAgent) return sendError(res, 403, "resource_not_bound", "agent is not bound to this external app", ctx);
       if (!body.objective) return sendError(res, 400, "missing_objective", "objective is required", ctx);
-      evidence.plan_follow_up_received = typeof body.input?.previous_plan_follow_up?.previous_plan === "string"
-        && typeof body.input?.previous_plan_follow_up?.current_work === "string";
+      evidence.attachment_comparison_received = Array.isArray(body.input?.previous_report?.attachments)
+        && Array.isArray(body.input?.current_report?.attachments);
+      evidence.current_report_week = body.input?.current_report?.week || null;
+      evidence.previous_report_present = body.input?.previous_report !== null && typeof body.input?.previous_report === "object";
+      evidence.previous_attachment_received = Array.isArray(body.input?.previous_report?.attachments);
+      evidence.only_current_and_previous = Object.prototype.hasOwnProperty.call(body.input || {}, "previous_report")
+        && !Object.prototype.hasOwnProperty.call(body.input || {}, "history_reports")
+        && !Object.prototype.hasOwnProperty.call(body.input || {}, "previous_report_comparison");
       evidence.plain_text_requested = typeof body.objective === "string"
         && body.objective.includes("中文自然语言文本")
         && body.objective.includes("不要输出 JSON、表格");
@@ -463,18 +473,18 @@ async function handle(req, res) {
         && body.inject_memories === true
         && body.capture_memory === true
         && typeof body.input?.current_report?.title === "string"
-        && typeof body.input?.current_report?.current_work === "string"
-        && typeof body.input?.current_report?.next_plan === "string"
         && Array.isArray(body.input?.current_report?.attachments)
-        && Array.isArray(body.input?.history_reports)
+        && Object.prototype.hasOwnProperty.call(body.input || {}, "previous_report")
+        && (body.input.previous_report === null || Array.isArray(body.input.previous_report?.attachments))
+        && evidence.only_current_and_previous
         && Array.isArray(body.input?.comments);
       if (strictContract && !evidence.body_contract_valid) {
         return sendError(res, 400, "invalid_agent_run_contract", "Agent run request does not match the documented contract", ctx);
       }
       const runId = randomUUID();
-      const weeklySectionsReceived = typeof body.input?.current_report?.current_work === "string"
-        && typeof body.input?.current_report?.next_plan === "string";
-      const answer = `${selectedAgent.name} 已完成任务：${body.objective}${weeklySectionsReceived ? "；已接收分栏的本周工作与下周计划" : ""}${evidence.plan_follow_up_received ? "；已接收上次计划与本次完成情况对照材料" : ""}`;
+      const attachmentContextReceived = Array.isArray(body.input?.current_report?.attachments)
+        && body.input.current_report.attachments.length > 0;
+      const answer = `${selectedAgent.name} 已完成任务：${body.objective}${attachmentContextReceived ? "；已接收本次周报附件文本" : ""}${evidence.attachment_comparison_received ? "；已接收历史与本次附件对照材料" : ""}`;
       return sendJson(res, 201, {
         contract: "external_app.agent_run.v1",
         tenant_id: tenantId,

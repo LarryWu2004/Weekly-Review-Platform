@@ -64,6 +64,29 @@ function assert(condition, message) {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
 }
 
+function minimalPdf(text) {
+  const escaped = text.replace(/([\\()])/g, "\\$1");
+  const stream = `BT /F1 18 Tf 72 720 Td (${escaped}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf);
+}
+
 try {
   start(process.execPath, ["server.js"], path.join(root, "tools", "external-app-api-mock"), {
     PORT: String(mockPort),
@@ -154,38 +177,73 @@ try {
   });
   assert(foreignAgentPreference.status === 403, "a user must not configure another user's Agent");
 
+  const missingAttachmentForm = new FormData();
+  missingAttachmentForm.set("week_start", "2026-06-29");
+  missingAttachmentForm.set("title", "缺少附件的周报");
+  const missingAttachmentResponse = await fetch(`http://localhost:${appPort}/api/reports`, {
+    method: "POST", headers: { Cookie: await sessionCookie(alice) }, body: missingAttachmentForm,
+  });
+  assert(missingAttachmentResponse.status === 400, "a weekly report submission must contain at least one attachment");
+
+  const oldestForm = new FormData();
+  oldestForm.set("week_start", "2026-06-29");
+  oldestForm.set("title", "第 27 周周报（无历史基线）");
+  oldestForm.append("attachments", new Blob(["最早周报：本周完成平台接入准备。"], { type: "text/plain" }), "第27周周报.txt");
+  const oldestReport = await request("/api/reports", alice, { method: "POST", body: oldestForm });
+
   const previousForm = new FormData();
   previousForm.set("week_start", "2026-07-06");
   previousForm.set("title", "第 28 周周报（计划对照基线）");
   previousForm.set("current_work", "完成平台接入方案评审。");
   previousForm.set("next_plan", "完成组织权限同步与 Agent 分析链路验证，并补充量化验收指标。");
+  previousForm.append("attachments", new Blob(["上周周报：完成平台接入方案评审；下周计划完成组织权限同步与 Agent 分析链路验证。"], { type: "text/plain" }), "第28周周报.txt");
   const previousReport = await request("/api/reports", alice, { method: "POST", body: previousForm });
-  assert(previousReport.next_plan.includes("组织权限同步"), "the previous report should provide a plan-comparison baseline");
+  assert(previousReport.attachments[0].text_preview.includes("组织权限同步"), "the previous attachment should provide historical report context");
 
   const form = new FormData();
   form.set("week_start", "2026-07-13");
   form.set("title", "第 29 周周报（集成测试）");
-  form.set("current_work", "完成组织权限同步与 Agent 分析链路验证。阻塞项：无。");
-  form.set("next_plan", "完善生产环境配置并补充量化验收指标。");
-  const expectedFilename = "项目进展清单.csv";
-  form.append("attachments", new Blob(["测试附件：权限同步检查通过。"], { type: "text/csv" }), expectedFilename);
+  const expectedFilename = "第29周周报.pdf";
+  form.append("attachments", new Blob([minimalPdf("Weekly report attachment preview")], { type: "application/pdf" }), expectedFilename);
+  const wordWithImage = await fs.readFile(path.join(root, "node_modules", "mammoth", "test", "test-data", "tiny-picture.docx"));
+  form.append("attachments", new Blob([wordWithImage], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), "含图片周报.docx");
   const created = await request("/api/reports", alice, { method: "POST", body: form });
-  assert(created.current_work.includes("组织权限同步") && created.next_plan.includes("生产环境配置"), "current work and next plan should be stored as separate report fields");
+  assert(created.current_work === "" && created.next_plan === "", "attachment-only submission should keep legacy report text fields empty");
   assert(created.viewers.length === 3, "author, direct superior and indirect superior should have access");
   assert(created.attachments[0].original_name === expectedFilename, `Chinese attachment filename should round-trip unchanged; received ${created.attachments[0].original_name}`);
-  assert(created.attachments[0].text_preview.includes("权限同步"), "attachment text should be extracted");
+  assert(typeof created.attachments[0].text_preview === "string", "attachment metadata should expose extracted preview text when available");
+
+  const previewResponse = await fetch(`http://localhost:${appPort}/api/attachments/${created.attachments[0].id}/preview`, {
+    headers: { Cookie: await sessionCookie(manager) },
+  });
+  assert(previewResponse.status === 200, "an authorized reviewer should be able to preview a PDF attachment");
+  assert(String(previewResponse.headers.get("content-type") || "").startsWith("application/pdf"), "PDF preview should preserve its media type");
+  assert(String(previewResponse.headers.get("content-disposition") || "").startsWith("inline"), "PDF preview should be displayed inline");
+
+  const wordAttachment = created.attachments.find((item) => item.original_name === "含图片周报.docx");
+  assert(wordAttachment, "the image-bearing Word fixture should be stored as a report attachment");
+  const wordPreviewResponse = await fetch(`http://localhost:${appPort}/api/attachments/${wordAttachment.id}/preview`, {
+    headers: { Cookie: await sessionCookie(manager) },
+  });
+  const wordPreviewHtml = await wordPreviewResponse.text();
+  assert(wordPreviewResponse.status === 200 && String(wordPreviewResponse.headers.get("content-type") || "").startsWith("text/html"), "an authorized reviewer should receive an HTML Word preview");
+  assert(wordPreviewHtml.includes("data:image/png;base64,"), "Word preview HTML should embed document images");
 
   const attachmentResponse = await fetch(`http://localhost:${appPort}/api/attachments/${created.attachments[0].id}/download`, {
     headers: { Cookie: await sessionCookie(manager) },
   });
   assert(attachmentResponse.status === 200, "an authorized reviewer should be able to download an attachment");
-  assert((await attachmentResponse.text()).includes("权限同步检查通过"), "downloaded attachment bytes should match the uploaded Chinese content");
+  assert((await attachmentResponse.text()).includes("Weekly report attachment preview"), "downloaded attachment bytes should match the uploaded PDF content");
   assert(String(attachmentResponse.headers.get("content-disposition") || "").includes("filename*=UTF-8''"), "Chinese downloads should use an RFC 5987 filename");
 
   const unrelatedAttachment = await fetch(`http://localhost:${appPort}/api/attachments/${created.attachments[0].id}/download`, {
     headers: { Cookie: await sessionCookie("unrelated-user") },
   });
   assert(unrelatedAttachment.status === 403, "users outside the permission snapshot must not download attachments");
+  const unrelatedPreview = await fetch(`http://localhost:${appPort}/api/attachments/${created.attachments[0].id}/preview`, {
+    headers: { Cookie: await sessionCookie("unrelated-user") },
+  });
+  assert(unrelatedPreview.status === 403, "users outside the permission snapshot must not preview attachments");
 
   const filesBeforeDuplicate = await fs.readdir(path.join(temp, "uploads"));
   const duplicate = new FormData();
@@ -199,7 +257,7 @@ try {
   });
   assert(duplicateResponse.status === 409, "submitting the same week twice should be rejected as one transaction");
   const afterDuplicate = await request(`/api/reports/${created.id}`, alice);
-  assert(afterDuplicate.title === created.title && afterDuplicate.attachments.length === 1, "a rejected duplicate must not partially replace the report or attachments");
+  assert(afterDuplicate.title === created.title && afterDuplicate.attachments.length === 2, "a rejected duplicate must not partially replace the report or attachments");
   assert((await fs.readdir(path.join(temp, "uploads"))).length === filesBeforeDuplicate.length, "a rejected duplicate must clean up its staged attachment file");
 
   const rollbackForm = new FormData();
@@ -222,15 +280,15 @@ try {
   const directorQueue = await request("/api/reports?scope=review", director);
   assert(directorQueue.items.some((item) => item.id === created.id), "indirect superior should see the report");
 
-  const keywordFiltered = await request(`/api/reports?scope=mine&q=${encodeURIComponent("阻塞项")}`, alice);
-  assert(keywordFiltered.count === 1 && keywordFiltered.items[0].id === created.id, "keyword search should match report content");
+  const keywordFiltered = await request(`/api/reports?scope=mine&q=${encodeURIComponent(expectedFilename)}`, alice);
+  assert(keywordFiltered.count === 1 && keywordFiltered.items[0].id === created.id, "keyword search should match an attachment filename");
   const authorFiltered = await request(`/api/reports?scope=review&author=${encodeURIComponent("Alice")}`, manager);
   assert(authorFiltered.items.some((item) => item.id === created.id), "review archive should filter reports by author name");
   const dateFiltered = await request("/api/reports?scope=review&from=2026-07-13&to=2026-07-13", manager);
   assert(dateFiltered.count === 1 && dateFiltered.items[0].id === created.id, "date range should include a matching report week");
   const outsideDate = await request("/api/reports?scope=review&from=2026-07-20&to=2026-07-27", manager);
   assert(outsideDate.count === 0, "date range should exclude reports outside the selected weeks");
-  const unrelatedArchive = await request(`/api/reports?scope=review&q=${encodeURIComponent("阻塞项")}`, "unrelated-user");
+  const unrelatedArchive = await request(`/api/reports?scope=review&q=${encodeURIComponent(expectedFilename)}`, "unrelated-user");
   assert(unrelatedArchive.count === 0, "archive filters must not expose reports outside the viewer permission table");
   const invalidDateRange = await fetch(`http://localhost:${appPort}/api/reports?scope=mine&from=2026-07-20&to=2026-07-13`, { headers: { Cookie: await sessionCookie(alice) } });
   assert(invalidDateRange.status === 400, "inverted archive date ranges should be rejected");
@@ -273,11 +331,18 @@ try {
   assert(analysisJob.status === "succeeded", `author agent analysis should succeed; received ${analysisJob.status}: ${analysisJob.error || ""}`);
   assert(analysisJob.analysis?.answer, "completed Agent job should return its analysis");
   assert(analysisJob.analysis.answer.includes("目标与指标 Agent"), "author analysis should use the Agent saved in user preferences");
-  assert(analysisJob.analysis.answer.includes("已接收分栏的本周工作与下周计划"), "Agent input should contain separate current_work and next_plan fields");
-  assert(analysisJob.analysis.answer.includes("已接收上次计划与本次完成情况对照材料"), "Agent should receive an explicit previous-plan follow-up comparison");
+  assert(analysisJob.analysis.answer.includes("已接收本次周报附件文本"), "Agent input should contain the current report attachment text");
+  assert(analysisJob.analysis.answer.includes("已接收历史与本次附件对照材料"), "Agent should receive explicit previous and current attachment comparison material");
   assert(typeof analysisJob.analysis.answer === "string" && !analysisJob.analysis.answer.trim().startsWith("{"), "Agent analysis should remain one plain-text answer for the existing result card");
   const afterAnalysis = await request(`/api/reports/${created.id}`, alice);
   assert(afterAnalysis.analyses.length === 2, "author and reviewer analyses should both be persisted");
+
+  let noHistoryAnalysisJob = await request(`/api/reports/${oldestReport.id}/analyze`, alice, { method: "POST", body: JSON.stringify({}) });
+  for (let count = 0; !["succeeded", "failed"].includes(noHistoryAnalysisJob.status) && count < 40; count += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    noHistoryAnalysisJob = await request(`/api/agent-jobs/${noHistoryAnalysisJob.id}`, alice);
+  }
+  assert(noHistoryAnalysisJob.status === "succeeded", `a report without history should still be analyzable; received ${noHistoryAnalysisJob.status}: ${noHistoryAnalysisJob.error || ""}`);
 
   const forbidden = await fetch(`http://localhost:${appPort}/api/reports/${created.id}`, { headers: { Cookie: await sessionCookie("unrelated-user") } });
   assert(forbidden.status === 403, "unrelated users should be denied");
@@ -311,7 +376,7 @@ try {
     headers: { Cookie: await sessionCookie(alice) },
   });
   assert(deletedAttachment.status === 404, "deleting a report should cascade to attachment metadata");
-  assert((await fs.readdir(path.join(temp, "uploads"))).length === 0, "deleting a report should remove its attachment file");
+  assert((await fs.readdir(path.join(temp, "uploads"))).length === filesBeforeDuplicate.length - created.attachments.length, "deleting a report should remove the deleted report's attachment file");
 
   const databaseModule = await import("better-sqlite3");
   const verificationDb = new databaseModule.default(path.join(temp, "data", "weekly.db"), { readonly: true });
@@ -329,10 +394,13 @@ try {
   assert(externalRequests.length > 0 && externalRequests.every((item) => item.authorization_present && item.tenant_id === tenantId && item.app_key === "platform-api-tester" && item.user_id && item.request_id), "every platform API call should carry authentication, tenant, app, user and request identity headers");
   assert(externalRequests.some((item) => item.path === "/api/v1/external-app/context"), "the app should call the platform context API during launch");
   assert(externalRequests.some((item) => item.path === "/api/v1/external-app/organization-graph" && item.query_user_id === alice), "report submission should call organization-graph with the author user ID");
-  const agentRunRequest = externalRequests.find((item) => /\/external-app\/agents\/[^/]+\/runs$/.test(item.path));
+  const agentRunRequest = externalRequests.find((item) => /\/external-app\/agents\/[^/]+\/runs$/.test(item.path) && item.current_report_week === "2026-07-13");
   assert(agentRunRequest?.method === "POST" && agentRunRequest.body_contract_valid, "Agent execution should use the documented run path and complete request body contract");
-  assert(agentRunRequest.plan_follow_up_received && agentRunRequest.plain_text_requested, "Agent execution should request one text answer using the explicit prior-plan comparison material");
+  assert(agentRunRequest.attachment_comparison_received && agentRunRequest.plain_text_requested, "Agent execution should request one text answer using explicit historical and current attachment comparison material");
+  assert(agentRunRequest.previous_report_present === true && agentRunRequest.previous_attachment_received === true && agentRunRequest.only_current_and_previous === true, "Agent execution should include current_report and only the immediately previous_report without duplicated history fields");
   assert(agentRunRequest.inject_memories === true && agentRunRequest.capture_memory === true, "Agent execution should inject the user's memories and allow the result to be written back to memory");
+  const noHistoryAgentRunRequest = externalRequests.find((item) => /\/external-app\/agents\/[^/]+\/runs$/.test(item.path) && item.current_report_week === "2026-06-29");
+  assert(noHistoryAgentRunRequest?.previous_report_present === false && noHistoryAgentRunRequest.only_current_and_previous === true, "a report without history should send current_report with previous_report set to null");
 
   const logoutCookie = await sessionCookie("logout-test-user");
   const logoutResponse = await fetch(`http://localhost:${appPort}/auth/logout`, { method: "POST", headers: { Cookie: logoutCookie } });

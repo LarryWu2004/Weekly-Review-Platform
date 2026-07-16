@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowLeft, Bot, File, LoaderCircle, Send, Sparkles, Trash2, Users, X } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, Bot, FileText, LoaderCircle, Send, Sparkles, Trash2, Users, X } from "lucide-react";
 import { api, downloadAttachment } from "./api";
-import type { AgentJob, Comment, ReportDetail } from "./types";
-import { Avatar, formatDate, formatFileSize, formatWeek, weekNumber } from "./ui";
+import type { AgentJob, Attachment, Comment, ReportDetail } from "./types";
+import { attachmentPreviewMode, attachmentPreviewUrl, Avatar, formatDate, formatFileSize, formatWeek, weekNumber } from "./ui";
 
 export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose, onChanged, onDeleted, notify }: {
   reportId: string;
@@ -14,6 +14,7 @@ export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose,
   notify: (message: string) => void;
 }) {
   const [report, setReport] = useState<ReportDetail | null>(null);
+  const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [commenting, setCommenting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -22,9 +23,13 @@ export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose,
 
   useEffect(() => {
     setReport(null);
+    setSelectedAttachmentId(null);
     setConfirmingDelete(false);
     api<ReportDetail>(`/api/reports/${reportId}`)
-      .then(setReport)
+      .then((loaded) => {
+        setReport(loaded);
+        setSelectedAttachmentId(loaded.attachments[0]?.id || null);
+      })
       .catch((error) => notify(error instanceof Error ? error.message : "加载失败"));
   }, [reportId, notify]);
 
@@ -74,8 +79,7 @@ export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose,
         job = await api<AgentJob>(`/api/agent-jobs/${job.id}`);
       }
       if (job.status !== "succeeded" || !job.analysis) throw new Error(job.error || "Agent 分析超时，请稍后重试");
-      const analysis = job.analysis;
-      setReport({ ...report, analyses: [analysis, ...report.analyses] });
+      setReport({ ...report, analyses: [job.analysis, ...report.analyses] });
       onChanged();
       notify("Agent 分析已完成");
     } catch (error) {
@@ -98,68 +102,66 @@ export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose,
     }
   }
 
-  async function download(id: string, name: string) {
-    try { await downloadAttachment(id, name); }
+  async function download(attachment: Attachment) {
+    try { await downloadAttachment(attachment.id, attachment.original_name); }
     catch (error) { notify(error instanceof Error ? error.message : "下载失败"); }
   }
 
   const isAuthor = report?.author_user_id === currentUserId;
+  const selectedAttachment = report?.attachments.find((item) => item.id === selectedAttachmentId) || report?.attachments[0] || null;
+
   return (
     <div className="detail-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="detail-drawer" role="dialog" aria-modal="true" aria-label="周报详情">
-        <div className="drawer-top">
-          <div><button className="icon-button" onClick={onClose} aria-label="返回"><ArrowLeft size={19} /></button><span>周报详情</span></div>
-          <div className="drawer-actions">
-            {isAuthor ? <button className="text-button danger-button" disabled={deleting} onClick={() => setConfirmingDelete(true)}><Trash2 size={16} />删除</button> : null}
-            <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
-          </div>
-        </div>
+      <div className="detail-workspace" role="dialog" aria-modal="true" aria-label="周报详情">
         {!report ? <div className="detail-loading"><LoaderCircle className="spin" /></div> : (
-          <div>
-            <header className="detail-hero">
-              <span className="detail-week">{weekNumber(report.week_start)}</span>
-              <div className="eyebrow">{formatWeek(report.week_start)} <span className="status-mark">已提交</span></div>
-              <h2>{report.title}</h2>
-              <div className="detail-author"><Avatar name={report.author_name} /><div><strong>{report.author_name}</strong><span>{report.author_email}</span></div></div>
-              {isAuthor ? <div className="viewer-line"><Users size={15} /><span>{Math.max(0, report.viewers.length - 1)} 位审阅人可查看</span></div> : null}
-            </header>
+          <>
+            <AttachmentPreview
+              attachments={report.attachments}
+              selected={selectedAttachment}
+              onSelect={setSelectedAttachmentId}
+              onDownload={(attachment) => void download(attachment)}
+            />
 
-            <section className="detail-section">
-              <SectionTitle index="01" title="周报内容" />
-              <div className="report-section-content">
-                <article><span>本周工作</span><p className="report-content">{report.current_work}</p></article>
-                <article><span>下周计划</span><p className="report-content">{report.next_plan}</p></article>
-              </div>
-              {report.attachments.length ? <div className="attachment-list">{report.attachments.map((attachment) => (
-                <div className="attachment-item" key={attachment.id}>
-                  <span><File size={18} /><span><strong>{attachment.original_name}</strong><small>{attachment.mime_type || "文件"} · {formatFileSize(attachment.size)}</small></span></span>
-                  <button className="icon-button" onClick={() => void download(attachment.id, attachment.original_name)} aria-label={`下载 ${attachment.original_name}`}><ArrowDownToLine size={17} /></button>
+            <div className="detail-drawer">
+              <div className="drawer-top">
+                <div><button className="icon-button" onClick={onClose} aria-label="返回"><ArrowLeft size={19} /></button><span>周报详情</span></div>
+                <div className="drawer-actions">
+                  {isAuthor ? <button className="text-button danger-button" disabled={deleting} onClick={() => setConfirmingDelete(true)}><Trash2 size={16} />删除</button> : null}
+                  <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
                 </div>
-              ))}</div> : null}
-            </section>
-
-            <section className="detail-section analysis-section">
-              <div className="section-title-row">
-                <div><span className="section-index">02</span><h3>Agent 评阅</h3></div>
-                <button className="secondary-button" disabled={analyzing} onClick={() => void analyze()}>
-                  {analyzing ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{analyzing ? "正在分析" : report.analyses.length ? "重新分析" : "开始分析"}
-                </button>
               </div>
-              {report.analyses.length ? <div className="analysis-result"><div className="analysis-meta"><Bot size={18} /><span>{formatDate(report.analyses[0].created_at)}</span></div><p>{report.analyses[0].answer}</p></div>
-                : <p className="section-empty">Agent 会结合本次内容、作者的历史周报、附件文本和已有评论给出建议。</p>}
-            </section>
+              <header className="detail-hero">
+                <span className="detail-week">{weekNumber(report.week_start)}</span>
+                <div className="eyebrow">{formatWeek(report.week_start)} <span className="status-mark">已提交</span></div>
+                <h2>{report.title}</h2>
+                <div className="detail-author"><Avatar name={report.author_name} /><div><strong>{report.author_name}</strong><span>{report.author_email}</span></div></div>
+                {isAuthor ? <div className="viewer-line"><Users size={15} /><span>{Math.max(0, report.viewers.length - 1)} 位审阅人可查看</span></div> : null}
+              </header>
 
-            <section className="detail-section">
-              <div className="section-title-row"><div><span className="section-index">03</span><h3>评论与反馈</h3></div><span className="count-label">{report.comments.length} 条</span></div>
-              <div className="comment-list">
-                {report.comments.map((item) => <article id={`comment-${item.id}`} className={`comment ${focusCommentId === item.id ? "is-focused" : ""}`} key={item.id}><Avatar name={item.commenter_name} /><div><div className="comment-head"><strong>{item.commenter_name}</strong><time>{formatDate(item.created_at)}</time></div><p>{item.content}</p></div></article>)}
-                {!report.comments.length ? <p className="section-empty">暂无评论。</p> : null}
-              </div>
-              {!isAuthor ? <form className="comment-form" onSubmit={submitComment}><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的反馈…" rows={3} /><button className="primary-button compact" disabled={!comment.trim() || commenting}>{commenting ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}发表评论</button></form> : null}
-            </section>
-          </div>
+              <section className="detail-section analysis-section">
+                <div className="section-title-row">
+                  <div><span className="section-index">01</span><h3>Agent 评阅</h3></div>
+                  <button className="secondary-button" disabled={analyzing} onClick={() => void analyze()}>
+                    {analyzing ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{analyzing ? "正在分析" : report.analyses.length ? "重新分析" : "开始分析"}
+                  </button>
+                </div>
+                {report.analyses.length ? <div className="analysis-result"><div className="analysis-meta"><Bot size={18} /><span>{formatDate(report.analyses[0].created_at)}</span></div><p>{report.analyses[0].answer}</p></div>
+                  : <p className="section-empty">Agent 会结合本次及历史周报的附件文本和已有评论给出建议。</p>}
+              </section>
+
+              <section className="detail-section">
+                <div className="section-title-row"><div><span className="section-index">02</span><h3>评论与反馈</h3></div><span className="count-label">{report.comments.length} 条</span></div>
+                <div className="comment-list">
+                  {report.comments.map((item) => <article id={`comment-${item.id}`} className={`comment ${focusCommentId === item.id ? "is-focused" : ""}`} key={item.id}><Avatar name={item.commenter_name} /><div><div className="comment-head"><strong>{item.commenter_name}</strong><time>{formatDate(item.created_at)}</time></div><p>{item.content}</p></div></article>)}
+                  {!report.comments.length ? <p className="section-empty">暂无评论。</p> : null}
+                </div>
+                {!isAuthor ? <form className="comment-form" onSubmit={submitComment}><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="写下具体、可执行的反馈…" rows={3} /><button className="primary-button compact" disabled={!comment.trim() || commenting}>{commenting ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}发表评论</button></form> : null}
+              </section>
+            </div>
+          </>
         )}
       </div>
+
       {report && confirmingDelete ? (
         <div className="delete-confirm-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !deleting && setConfirmingDelete(false)}>
           <div className="delete-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-confirm-title" aria-describedby="delete-confirm-description">
@@ -180,6 +182,35 @@ export function ReportDrawer({ reportId, currentUserId, focusCommentId, onClose,
   );
 }
 
-function SectionTitle({ index, title }: { index: string; title: string }) {
-  return <div className="section-title-row"><div><span className="section-index">{index}</span><h3>{title}</h3></div></div>;
+function AttachmentPreview({ attachments, selected, onSelect, onDownload }: {
+  attachments: Attachment[];
+  selected: Attachment | null;
+  onSelect: (id: string) => void;
+  onDownload: (attachment: Attachment) => void;
+}) {
+  const mode = selected ? attachmentPreviewMode(selected.original_name) : "text";
+  return (
+    <section className={`attachment-preview-pane ${attachments.length > 1 ? "has-tabs" : ""}`} aria-label="附件预览">
+      <header className="preview-toolbar">
+        <div><span>附件预览</span><strong>{selected?.original_name || "暂无附件"}</strong></div>
+        {selected ? <button className="secondary-button preview-download" onClick={() => onDownload(selected)}><ArrowDownToLine size={16} />下载</button> : null}
+      </header>
+      {attachments.length > 1 ? <nav className="attachment-tabs" aria-label="选择预览附件">{attachments.map((attachment, index) => (
+        <button key={attachment.id} className={attachment.id === selected?.id ? "active" : ""} onClick={() => onSelect(attachment.id)}>
+          <span>{String(index + 1).padStart(2, "0")}</span><strong>{attachment.original_name}</strong><small>{formatFileSize(attachment.size)}</small>
+        </button>
+      ))}</nav> : null}
+      <div className="preview-stage">
+        {!selected ? <div className="preview-empty"><FileText size={28} /><strong>暂无可预览附件</strong></div> : null}
+        {selected && mode === "pdf" ? <iframe className="pdf-preview" title={`预览 ${selected.original_name}`} src={attachmentPreviewUrl(selected.id, mode)} /> : null}
+        {selected && mode === "document" ? <iframe className="document-html-preview" sandbox="" title={`预览 ${selected.original_name}`} src={attachmentPreviewUrl(selected.id, mode)} /> : null}
+        {selected && mode === "text" ? (
+          <article className="document-preview-paper">
+            <header><FileText size={17} /><span>附件文本内容</span></header>
+            {selected.text_preview ? <pre>{selected.text_preview}</pre> : <div className="preview-empty"><FileText size={28} /><strong>暂时无法提取该附件的文本</strong><p>可下载原文件查看完整内容。</p></div>}
+          </article>
+        ) : null}
+      </div>
+    </section>
+  );
 }

@@ -265,7 +265,7 @@ function MessageRow({ message, index, onOpen }: { message: Message; index: numbe
 function ReportRow({ report, onOpen }: { report: Report; onOpen: () => void }) {
   return <button className="report-row" onClick={onOpen}>
     <span className="week-folio"><span>WEEK</span><strong>{weekNumber(report.week_start)}</strong></span>
-    <span className="report-copy"><h3>{report.title}</h3><p>{report.current_work}</p><span className="report-author"><Avatar name={report.author_name} />{report.author_name}</span></span>
+    <span className="report-copy"><h3>{report.title}</h3><p>{report.attachment_count} 个周报附件</p><span className="report-author"><Avatar name={report.author_name} />{report.author_name}</span></span>
     <span className="report-meta"><span>{formatWeek(report.week_start)}</span><span><MessageSquare size={14} />{report.comment_count} 条评论</span><span>提交于 {formatDate(report.created_at)}</span></span>
     <ArrowRight className="row-arrow" size={20} />
   </button>;

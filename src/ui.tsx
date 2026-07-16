@@ -25,6 +25,18 @@ export function formatFileSize(size: number) {
   return size < 1024 * 1024 ? `${Math.ceil(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+export function attachmentPreviewMode(name: string): "pdf" | "document" | "text" {
+  const extension = name.toLowerCase().split(".").pop() || "";
+  if (extension === "pdf") return "pdf";
+  if (extension === "docx") return "document";
+  return "text";
+}
+
+export function attachmentPreviewUrl(id: string, mode: "pdf" | "document" | "text") {
+  const base = `/api/attachments/${encodeURIComponent(id)}/preview`;
+  return mode === "pdf" ? `${base}#zoom=page-width&view=FitH` : base;
+}
+
 export function Metric({ index, value, label }: { index: string; value: number; label: string }) {
   return <div className="metric"><span className="metric-index">{index}</span><div><strong>{String(value).padStart(2, "0")}</strong><span>{label}</span></div></div>;
 }

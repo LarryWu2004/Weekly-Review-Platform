@@ -5,13 +5,12 @@ import path from "node:path";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { db, syncUsers, writeAudit } from "./database.js";
-import { extractText, isAllowedAttachmentName, validateAttachment } from "./attachments.js";
+import { extractText, isAllowedAttachmentName, renderDocxPreview, validateAttachment } from "./attachments.js";
 import { normalizeMultipartFilename } from "./filenames.js";
 import { PlatformError, platform } from "./platform.js";
 import { config } from "./config.js";
 import { HttpError, rateLimit, requestSecurity, userIdFrom } from "./security.js";
 import { authorizePlatformLaunch, consumeLaunchTicket, createLaunchTicket, revokeSession, sessionCookieOptions, sessionUserId, validRedirectPath, validUserId } from "./auth.js";
-import { composeReportContent } from "./report-content.js";
 
 const app = express();
 const port = config.port;
@@ -218,17 +217,19 @@ async function processAgentJob(jobId: string) {
     if (!current || !canView(job.report_id, job.user_id)) throw new Error("周报不存在或任务发起人已失去权限");
 
     const historyReports = db.prepare(`
-      SELECT id, week_start, title, current_work, next_plan FROM reports
-      WHERE tenant_id = ? AND author_user_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 8
-    `).all(config.tenantId, current.author_user_id, current.week_start) as Array<{ id: string; week_start: string; title: string; current_work: string; next_plan: string }>;
+      SELECT id, week_start, title FROM reports
+      WHERE tenant_id = ? AND author_user_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1
+    `).all(config.tenantId, current.author_user_id, current.week_start) as Array<{ id: string; week_start: string; title: string }>;
     const previousReport = historyReports[0] || null;
-    const history = historyReports.map((report) => ({
-      week: report.week_start,
-      title: report.title,
-      current_work: report.current_work,
-      next_plan: report.next_plan,
-      comments: (db.prepare("SELECT content FROM comments WHERE report_id = ? AND tenant_id = ? ORDER BY created_at").all(report.id, config.tenantId) as Array<{ content: string }>).map((item) => item.content),
-    }));
+    const previous = previousReport ? {
+      week: previousReport.week_start,
+      title: previousReport.title,
+      attachments: (db.prepare("SELECT original_name, text_preview FROM attachments WHERE report_id = ? AND tenant_id = ? ORDER BY created_at").all(previousReport.id, config.tenantId) as Array<{ original_name: string; text_preview: string }>).map((item) => ({
+        file_name: item.original_name,
+        text_preview: item.text_preview,
+      })),
+      comments: (db.prepare("SELECT content FROM comments WHERE report_id = ? AND tenant_id = ? ORDER BY created_at").all(previousReport.id, config.tenantId) as Array<{ content: string }>).map((item) => item.content),
+    } : null;
     const attachments = current.attachments as Array<{ original_name: string; text_preview: string }>;
     const comments = current.comments as Array<{ commenter_user_id: string; content: string }>;
     const agents = await platform.agents(job.user_id);
@@ -242,17 +243,9 @@ async function processAgentJob(jobId: string) {
       current_report: {
         week: current.week_start,
         title: current.title,
-        current_work: current.current_work,
-        next_plan: current.next_plan,
         attachments: attachments.map((item) => ({ file_name: item.original_name, text_preview: item.text_preview })),
       },
-      history_reports: history,
-      previous_plan_follow_up: previousReport ? {
-        previous_week: previousReport.week_start,
-        previous_plan: previousReport.next_plan,
-        current_week: current.week_start,
-        current_work: current.current_work,
-      } : null,
+      previous_report: previous,
       comments: comments.map((item) => ({ commenter_user_id: item.commenter_user_id, content: item.content })),
     });
     const analysisId = randomUUID();
@@ -465,7 +458,12 @@ app.get("/api/reports", (req, res) => {
       ? "ra.viewer_user_id = @userId AND r.author_user_id <> @userId"
       : "r.author_user_id = @userId OR ra.viewer_user_id = @userId";
   const filterCondition = `
-    (@keyword = '' OR r.title LIKE @keywordPattern OR r.current_work LIKE @keywordPattern OR r.next_plan LIKE @keywordPattern OR r.content LIKE @keywordPattern)
+    (@keyword = '' OR r.title LIKE @keywordPattern OR r.current_work LIKE @keywordPattern OR r.next_plan LIKE @keywordPattern OR r.content LIKE @keywordPattern
+      OR EXISTS (
+        SELECT 1 FROM attachments search_attachment
+        WHERE search_attachment.report_id = r.id AND search_attachment.tenant_id = r.tenant_id
+          AND (search_attachment.original_name LIKE @keywordPattern OR search_attachment.text_preview LIKE @keywordPattern)
+      ))
     AND (@author = '' OR u.name LIKE @authorPattern OR u.email LIKE @authorPattern OR r.author_user_id LIKE @authorPattern)
     AND (@dateFrom = '' OR r.week_start >= @dateFrom)
     AND (@dateTo = '' OR r.week_start <= @dateTo)
@@ -518,14 +516,14 @@ app.get("/api/reports/:id", (req, res) => {
 app.post("/api/reports", upload.array("attachments", 5), asyncRoute(async (req, res) => {
   const authorUserId = userIdFrom(req);
   const title = String(req.body.title || "").trim();
-  const currentWork = String(req.body.current_work || "").trim();
-  const nextPlan = String(req.body.next_plan || "").trim();
-  const content = composeReportContent(currentWork, nextPlan);
+  const currentWork = "";
+  const nextPlan = "";
+  const content = "";
   const weekStart = String(req.body.week_start || "").trim();
   const files = (req.files || []) as Express.Multer.File[];
-  if (!title || title.length > 80 || !currentWork || !nextPlan || currentWork.length > 30_000 || nextPlan.length > 20_000 || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart) || !isMonday(weekStart)) {
+  if (!title || title.length > 80 || files.length === 0 || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart) || !isMonday(weekStart)) {
     for (const file of files) fs.rmSync(file.path, { force: true });
-    return res.status(400).json({ error: { code: "bad_request", message: "请填写有效的周起始日（周一）、标题、本周工作和下周计划" } });
+    return res.status(400).json({ error: { code: "bad_request", message: "请选择有效的周起始日（周一）、填写标题并上传至少一个周报附件" } });
   }
 
   try {
@@ -668,6 +666,40 @@ app.get("/api/agent-jobs/:id", (req, res) => {
   if (job.user_id !== userId) return res.status(403).json({ error: { code: "forbidden", message: "无权查看此分析任务" } });
   res.json(agentJobDetail(jobId));
 });
+
+app.get("/api/attachments/:id/preview", asyncRoute(async (req, res) => {
+  const attachmentId = String(req.params.id);
+  const userId = userIdFrom(req);
+  const attachment = db.prepare("SELECT * FROM attachments WHERE id = ? AND tenant_id = ?").get(attachmentId, config.tenantId) as {
+    report_id: string; storage_path: string; original_name: string; mime_type: string;
+  } | undefined;
+  if (!attachment) return res.status(404).json({ error: { code: "not_found", message: "附件不存在" } });
+  if (!canView(attachment.report_id, userId)) return res.status(403).json({ error: { code: "forbidden", message: "你无权预览该附件" } });
+  const extension = path.extname(attachment.original_name).toLowerCase();
+  const encodedName = encodeURIComponent(attachment.original_name).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  writeAudit({ userId, action: "attachment.preview", entityType: "attachment", entityId: attachmentId, requestId: req.requestId, metadata: { report_id: attachment.report_id } });
+  if (extension === ".pdf") {
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}`);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.sendFile(path.resolve(attachment.storage_path));
+  }
+  if (extension === ".docx") {
+    try {
+      const content = await renderDocxPreview(attachment.storage_path);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}.html`);
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; sandbox");
+      return res.send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+        :root{color:#202124;background:#fff;font-family:"SimSun","Songti SC",serif}*{box-sizing:border-box}body{max-width:820px;margin:0 auto;padding:56px 64px 80px;font-size:16px;line-height:1.9}h1,h2,h3{line-height:1.35;color:#111}h1{font-size:2em}h2{margin-top:1.8em;font-size:1.5em}h3{margin-top:1.5em;font-size:1.2em}p{margin:.8em 0}img{display:block;max-width:100%;height:auto;margin:1.5em auto}table{width:100%;border-collapse:collapse;margin:1.5em 0}td,th{padding:.55em .7em;border:1px solid #cfd5df;text-align:left}a{color:#002fa7;text-decoration-thickness:1px;text-underline-offset:3px}@media(max-width:640px){body{padding:32px 24px 52px;font-size:15px}}
+      </style></head><body>${content}</body></html>`);
+    } catch {
+      throw new HttpError(422, "preview_failed", "Word 文档预览生成失败，请下载原文件查看");
+    }
+  }
+  return res.status(415).json({ error: { code: "preview_not_supported", message: "该附件使用提取文本进行预览" } });
+}));
 
 app.get("/api/attachments/:id/download", (req, res) => {
   const attachmentId = String(req.params.id);

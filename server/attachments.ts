@@ -103,3 +103,19 @@ export async function extractText(filePath: string, originalName: string): Promi
     return "";
   }
 }
+
+export async function renderDocxPreview(filePath: string): Promise<string> {
+  const result = await mammoth.convertToHtml(
+    { path: filePath },
+    {
+      convertImage: mammoth.images.dataUri,
+      externalFileAccess: false,
+      styleMap: [
+        "p[style-name='Title'] => h1:fresh",
+        "p[style-name='Heading 1'] => h2:fresh",
+        "p[style-name='Heading 2'] => h3:fresh",
+      ],
+    },
+  );
+  return result.value;
+}
