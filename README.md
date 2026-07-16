@@ -1,6 +1,6 @@
 # 周报协作
 
-当前版本：`v1.4`
+当前版本：`v1.5`
 
 周报协作是一个独立部署、由 Agent 协作平台启动的周报业务应用。用户可以提交“本周工作 / 下周计划”和附件；具备审阅权限的成员可以查看、评论并发起 Agent 分析。周报、权限快照、附件、评论、消息和分析结果全部保存在本应用中，平台只提供用户身份、组织关系和个人 Agent 能力。
 
@@ -66,7 +66,7 @@ AGENT_RATE_LIMIT_PER_MINUTE=6
 ### 3. 使用 Docker 部署（推荐）
 
 ```bash
-docker build -t weekly-review-platform:v1.4 .
+docker build -t weekly-review-platform:v1.5 .
 
 docker run -d \
   --name weekly-review-platform \
@@ -75,7 +75,7 @@ docker run -d \
   --env-file .env.production \
   -v weekly-data:/app/data \
   -v weekly-uploads:/app/uploads \
-  weekly-review-platform:v1.4
+  weekly-review-platform:v1.5
 ```
 
 必须持久化：
