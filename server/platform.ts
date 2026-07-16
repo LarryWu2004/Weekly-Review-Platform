@@ -92,13 +92,13 @@ export const platform = {
       method: "POST",
       body: JSON.stringify({
         user_id: userId,
-        objective: "请评价本次周报内容，结合历史周报和已有评论指出不足，并给出具体、可执行的改进建议",
+        objective: "请直接输出一段适合显示在周报详情卡片中的中文自然语言文本，不要输出 JSON、表格或拆成多个独立结果区块。先逐项对照最近一份历史周报的下周计划与本次周报的本周工作，说明已完成、部分完成、未体现和计划外完成的内容及判断依据；如果没有历史计划则明确说明。然后结合历史周报、附件文本和已有评论评价本次内容，指出不足并给出具体、可执行的改进建议。",
         input,
         mode: "task",
         runtime_hint: { provider: "eap_native" },
         inject_context: false,
-        inject_memories: false,
-        capture_memory: false,
+        inject_memories: true,
+        capture_memory: true,
       }),
     });
   },

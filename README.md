@@ -311,9 +311,10 @@ Agent Run 的核心输入结构：
 ```json
 {
   "user_id": "当前发起人 ID",
-  "objective": "请评价本次周报内容，结合历史周报和已有评论指出不足，并给出具体、可执行的改进建议",
+  "objective": "请输出一段中文自然语言文本，先对照上次计划与本次完成情况，再给出整体评价和改进建议；不要输出 JSON、表格或多个独立结果区块",
   "input": {
     "current_report": {
+      "week": "2026-07-13",
       "title": "第 30 周周报",
       "current_work": "本周工作内容",
       "next_plan": "下周计划内容",
@@ -325,15 +326,23 @@ Agent Run 的核心输入结构：
       ]
     },
     "history_reports": [],
+    "previous_plan_follow_up": {
+      "previous_week": "2026-07-06",
+      "previous_plan": "上次周报中的下周计划",
+      "current_week": "2026-07-13",
+      "current_work": "本次周报中的本周工作"
+    },
     "comments": []
   },
   "mode": "task",
   "runtime_hint": { "provider": "eap_native" },
   "inject_context": false,
-  "inject_memories": false,
-  "capture_memory": false
+  "inject_memories": true,
+  "capture_memory": true
 }
 ```
+
+其中 `inject_memories: true` 会在分析时注入当前用户可用的个人 Agent 记忆，`capture_memory: true` 允许平台将本次分析结果写回该用户的 Agent 记忆。应用不注入平台通用上下文，因此 `inject_context` 仍为 `false`。启用后，周报分析内容可能进入平台的个人记忆存储，生产部署时应同步纳入隐私告知与数据保留策略。
 
 完整 External App API 契约见 [external-app-api-reference..md](./external-app-api-reference..md)，应用启动协议的独立说明见 [docs/platform-launch-integration.md](./docs/platform-launch-integration.md)。
 
@@ -359,7 +368,7 @@ TRUSTED_PROXY_SECRET=<至少 32 位随机值>
 - 评论后自动产生消息提醒，支持单条已读和全部已读。
 - 作者和具备查看权限的成员都可以发起 Agent 分析。
 - 用户可以从平台返回的个人 Agent 列表中选择分析 Agent。
-- Agent 会结合本次周报、附件文本、最近 8 份历史周报和已有评论给出建议。
+- Agent 会先对照最近一份历史周报的下周计划与本次完成情况，再结合附件、历史内容和已有评论，在同一个结果卡片中返回一块自然语言文本。
 - 支持中文附件名、附件文本提取、安全下载和级联删除。
 - 提供持久化 Agent 任务、操作审计、限流、备份和恢复。
 

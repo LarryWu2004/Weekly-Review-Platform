@@ -214,13 +214,14 @@ async function processAgentJob(jobId: string) {
 
   const job = db.prepare("SELECT * FROM agent_jobs WHERE id = ? AND tenant_id = ?").get(jobId, config.tenantId) as AgentJob;
   try {
-    const current = reportDetail(job.report_id) as (Record<string, unknown> & { author_user_id: string; title: string; current_work: string; next_plan: string }) | null;
+    const current = reportDetail(job.report_id) as (Record<string, unknown> & { author_user_id: string; week_start: string; title: string; current_work: string; next_plan: string }) | null;
     if (!current || !canView(job.report_id, job.user_id)) throw new Error("周报不存在或任务发起人已失去权限");
 
     const historyReports = db.prepare(`
       SELECT id, week_start, title, current_work, next_plan FROM reports
-      WHERE tenant_id = ? AND author_user_id = ? AND id <> ? ORDER BY week_start DESC LIMIT 8
-    `).all(config.tenantId, current.author_user_id, job.report_id) as Array<{ id: string; week_start: string; title: string; current_work: string; next_plan: string }>;
+      WHERE tenant_id = ? AND author_user_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 8
+    `).all(config.tenantId, current.author_user_id, current.week_start) as Array<{ id: string; week_start: string; title: string; current_work: string; next_plan: string }>;
+    const previousReport = historyReports[0] || null;
     const history = historyReports.map((report) => ({
       week: report.week_start,
       title: report.title,
@@ -239,12 +240,19 @@ async function processAgentJob(jobId: string) {
 
     const run = await platform.runAgent(selectedAgent.id, job.user_id, {
       current_report: {
+        week: current.week_start,
         title: current.title,
         current_work: current.current_work,
         next_plan: current.next_plan,
         attachments: attachments.map((item) => ({ file_name: item.original_name, text_preview: item.text_preview })),
       },
       history_reports: history,
+      previous_plan_follow_up: previousReport ? {
+        previous_week: previousReport.week_start,
+        previous_plan: previousReport.next_plan,
+        current_week: current.week_start,
+        current_work: current.current_work,
+      } : null,
       comments: comments.map((item) => ({ commenter_user_id: item.commenter_user_id, content: item.content })),
     });
     const analysisId = randomUUID();

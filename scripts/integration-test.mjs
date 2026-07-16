@@ -154,6 +154,14 @@ try {
   });
   assert(foreignAgentPreference.status === 403, "a user must not configure another user's Agent");
 
+  const previousForm = new FormData();
+  previousForm.set("week_start", "2026-07-06");
+  previousForm.set("title", "第 28 周周报（计划对照基线）");
+  previousForm.set("current_work", "完成平台接入方案评审。");
+  previousForm.set("next_plan", "完成组织权限同步与 Agent 分析链路验证，并补充量化验收指标。");
+  const previousReport = await request("/api/reports", alice, { method: "POST", body: previousForm });
+  assert(previousReport.next_plan.includes("组织权限同步"), "the previous report should provide a plan-comparison baseline");
+
   const form = new FormData();
   form.set("week_start", "2026-07-13");
   form.set("title", "第 29 周周报（集成测试）");
@@ -214,7 +222,7 @@ try {
   const directorQueue = await request("/api/reports?scope=review", director);
   assert(directorQueue.items.some((item) => item.id === created.id), "indirect superior should see the report");
 
-  const keywordFiltered = await request(`/api/reports?scope=mine&q=${encodeURIComponent("组织权限")}`, alice);
+  const keywordFiltered = await request(`/api/reports?scope=mine&q=${encodeURIComponent("阻塞项")}`, alice);
   assert(keywordFiltered.count === 1 && keywordFiltered.items[0].id === created.id, "keyword search should match report content");
   const authorFiltered = await request(`/api/reports?scope=review&author=${encodeURIComponent("Alice")}`, manager);
   assert(authorFiltered.items.some((item) => item.id === created.id), "review archive should filter reports by author name");
@@ -222,7 +230,7 @@ try {
   assert(dateFiltered.count === 1 && dateFiltered.items[0].id === created.id, "date range should include a matching report week");
   const outsideDate = await request("/api/reports?scope=review&from=2026-07-20&to=2026-07-27", manager);
   assert(outsideDate.count === 0, "date range should exclude reports outside the selected weeks");
-  const unrelatedArchive = await request(`/api/reports?scope=review&q=${encodeURIComponent("组织权限")}`, "unrelated-user");
+  const unrelatedArchive = await request(`/api/reports?scope=review&q=${encodeURIComponent("阻塞项")}`, "unrelated-user");
   assert(unrelatedArchive.count === 0, "archive filters must not expose reports outside the viewer permission table");
   const invalidDateRange = await fetch(`http://localhost:${appPort}/api/reports?scope=mine&from=2026-07-20&to=2026-07-13`, { headers: { Cookie: await sessionCookie(alice) } });
   assert(invalidDateRange.status === 400, "inverted archive date ranges should be rejected");
@@ -266,6 +274,8 @@ try {
   assert(analysisJob.analysis?.answer, "completed Agent job should return its analysis");
   assert(analysisJob.analysis.answer.includes("目标与指标 Agent"), "author analysis should use the Agent saved in user preferences");
   assert(analysisJob.analysis.answer.includes("已接收分栏的本周工作与下周计划"), "Agent input should contain separate current_work and next_plan fields");
+  assert(analysisJob.analysis.answer.includes("已接收上次计划与本次完成情况对照材料"), "Agent should receive an explicit previous-plan follow-up comparison");
+  assert(typeof analysisJob.analysis.answer === "string" && !analysisJob.analysis.answer.trim().startsWith("{"), "Agent analysis should remain one plain-text answer for the existing result card");
   const afterAnalysis = await request(`/api/reports/${created.id}`, alice);
   assert(afterAnalysis.analyses.length === 2, "author and reviewer analyses should both be persisted");
 
@@ -321,6 +331,8 @@ try {
   assert(externalRequests.some((item) => item.path === "/api/v1/external-app/organization-graph" && item.query_user_id === alice), "report submission should call organization-graph with the author user ID");
   const agentRunRequest = externalRequests.find((item) => /\/external-app\/agents\/[^/]+\/runs$/.test(item.path));
   assert(agentRunRequest?.method === "POST" && agentRunRequest.body_contract_valid, "Agent execution should use the documented run path and complete request body contract");
+  assert(agentRunRequest.plan_follow_up_received && agentRunRequest.plain_text_requested, "Agent execution should request one text answer using the explicit prior-plan comparison material");
+  assert(agentRunRequest.inject_memories === true && agentRunRequest.capture_memory === true, "Agent execution should inject the user's memories and allow the result to be written back to memory");
 
   const logoutCookie = await sessionCookie("logout-test-user");
   const logoutResponse = await fetch(`http://localhost:${appPort}/auth/logout`, { method: "POST", headers: { Cookie: logoutCookie } });

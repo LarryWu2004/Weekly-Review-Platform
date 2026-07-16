@@ -409,6 +409,10 @@ async function handle(req, res) {
     request_id: String(req.headers["x-request-id"] || ""),
     query_user_id: url.searchParams.get("user_id") || "",
     body_contract_valid: null,
+    plan_follow_up_received: null,
+    plain_text_requested: null,
+    inject_memories: null,
+    capture_memory: null,
   };
   requestEvidence.push(evidence);
 
@@ -443,14 +447,21 @@ async function handle(req, res) {
       const selectedAgent = agentsForUser(body.user_id).find((item) => item.id === requestedAgentId);
       if (!selectedAgent) return sendError(res, 403, "resource_not_bound", "agent is not bound to this external app", ctx);
       if (!body.objective) return sendError(res, 400, "missing_objective", "objective is required", ctx);
+      evidence.plan_follow_up_received = typeof body.input?.previous_plan_follow_up?.previous_plan === "string"
+        && typeof body.input?.previous_plan_follow_up?.current_work === "string";
+      evidence.plain_text_requested = typeof body.objective === "string"
+        && body.objective.includes("中文自然语言文本")
+        && body.objective.includes("不要输出 JSON、表格");
+      evidence.inject_memories = body.inject_memories === true;
+      evidence.capture_memory = body.capture_memory === true;
       evidence.body_contract_valid = body.user_id === evidence.user_id
         && typeof body.objective === "string"
         && body.objective.length > 0
         && body.mode === "task"
         && body.runtime_hint?.provider === "eap_native"
         && body.inject_context === false
-        && body.inject_memories === false
-        && body.capture_memory === false
+        && body.inject_memories === true
+        && body.capture_memory === true
         && typeof body.input?.current_report?.title === "string"
         && typeof body.input?.current_report?.current_work === "string"
         && typeof body.input?.current_report?.next_plan === "string"
@@ -463,7 +474,7 @@ async function handle(req, res) {
       const runId = randomUUID();
       const weeklySectionsReceived = typeof body.input?.current_report?.current_work === "string"
         && typeof body.input?.current_report?.next_plan === "string";
-      const answer = `${selectedAgent.name} 已完成任务：${body.objective}${weeklySectionsReceived ? "；已接收分栏的本周工作与下周计划" : ""}`;
+      const answer = `${selectedAgent.name} 已完成任务：${body.objective}${weeklySectionsReceived ? "；已接收分栏的本周工作与下周计划" : ""}${evidence.plan_follow_up_received ? "；已接收上次计划与本次完成情况对照材料" : ""}`;
       return sendJson(res, 201, {
         contract: "external_app.agent_run.v1",
         tenant_id: tenantId,
